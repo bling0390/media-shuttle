@@ -1,0 +1,153 @@
+openapi: 3.0.3
+info:
+  title: media-shuttle-api
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+paths:
+  /v1/tasks/parse:
+    post:
+      summary: Create a parse task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateParseTaskRequest'
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTaskResponse'
+  /v1/tasks/{task_id}:
+    get:
+      summary: Get task detail
+      parameters:
+        - in: path
+          name: task_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskRecord'
+        '404':
+          description: Task not found
+  /v1/tasks:
+    get:
+      summary: List tasks
+      parameters:
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [QUEUED, PARSING, DOWNLOADING, UPLOADING, SUCCEEDED, FAILED]
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskRecord'
+                  total:
+                    type: integer
+                required: [items, total]
+  /v1/stats/queue:
+    get:
+      summary: Queue statistics
+      responses:
+        '200':
+          description: Queue metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parse:
+                    type: integer
+                  download:
+                    type: integer
+                  upload:
+                    type: integer
+                required: [parse, download, upload]
+components:
+  schemas:
+    CreateParseTaskRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        requester_id:
+          type: string
+        target:
+          type: string
+          enum: [RCLONE, TELEGRAM]
+        destination:
+          type: string
+      required: [url, requester_id, target, destination]
+    CreateTaskResponse:
+      type: object
+      properties:
+        task_id:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED]
+      required: [task_id, status]
+    TaskRecord:
+      type: object
+      properties:
+        task_id:
+          type: string
+        idempotency_key:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED, PARSING, DOWNLOADING, UPLOADING, SUCCEEDED, FAILED]
+        message:
+          type: string
+        requester_id:
+          type: string
+        url:
+          type: string
+        target:
+          type: string
+        destination:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - task_id
+        - idempotency_key
+        - status
+        - requester_id
+        - url
+        - target
+        - destination
+        - created_at
+        - updated_at

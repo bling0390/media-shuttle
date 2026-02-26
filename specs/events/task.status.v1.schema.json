@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task.status.v1",
+  "title": "TaskStatusV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {"const": "task.status.v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["QUEUED", "PARSING", "DOWNLOADING", "UPLOADING", "SUCCEEDED", "FAILED"]},
+    "message": {"type": "string"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "required": ["spec_version", "task_id", "status", "updated_at"]
+}

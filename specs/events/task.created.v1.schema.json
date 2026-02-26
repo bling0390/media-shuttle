@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task.created.v1",
+  "title": "TaskCreatedV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {"const": "task.created.v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "task_type": {"const": "parse_link"},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {"type": "string", "format": "uri"},
+        "requester_id": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "enum": ["RCLONE", "TELEGRAM"]},
+        "destination": {"type": "string", "minLength": 1}
+      },
+      "required": ["url", "requester_id", "target", "destination"]
+    }
+  },
+  "required": [
+    "spec_version",
+    "task_id",
+    "task_type",
+    "idempotency_key",
+    "created_at",
+    "payload"
+  ]
+}

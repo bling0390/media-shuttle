@@ -54,7 +54,8 @@ class TestCoreSitePlugins(unittest.TestCase):
         source = parser.parse("https://gofile.io/d/ABC123")[0]
         download = downloader.download(source)
         self.assertEqual(download.site, "GOFILE")
-        self.assertTrue(download.local_path.endswith(source.file_name))
+        self.assertEqual(Path(download.local_path).name, "tmp.part")
+        self.assertNotIn(source.file_name, download.local_path)
 
         uploaded = uploader.upload("RCLONE", download, "/incoming")
         self.assertTrue(uploaded.location.startswith("rclone://"))
@@ -76,7 +77,8 @@ class TestCoreSitePlugins(unittest.TestCase):
                 source = parser.parse(url)[0]
                 download = downloader.download(source)
                 self.assertEqual(download.site, source.site)
-                self.assertTrue(download.local_path.endswith(source.file_name))
+                self.assertEqual(Path(download.local_path).name, "tmp.part")
+                self.assertNotIn(source.file_name, download.local_path)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,8 @@ Optional vars (not required):
 export MEDIA_SHUTTLE_MONGO_DB='media_shuttle'
 export MEDIA_SHUTTLE_MONGO_TASK_COLLECTION='tasks'
 export MEDIA_SHUTTLE_CREATED_QUEUE_KEY='media_shuttle:task_created'
+export MEDIA_SHUTTLE_REDIS_PUBLISH_MODE='celery'   # celery | redis_list
+export MEDIA_SHUTTLE_CORE_CREATED_TASK_NAME='core.queue.tasks.process_created_event'
 ```
 
 ## 3. Run standalone

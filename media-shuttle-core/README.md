@@ -41,14 +41,64 @@ export MEDIA_SHUTTLE_RETRY_QUEUE_KEY='media_shuttle:task_retry'
 export MEDIA_SHUTTLE_DLQ_QUEUE_KEY='media_shuttle:task_dlq'
 ```
 
-## 3. Run standalone
+When running in `live` mode with `target=RCLONE`, the `rclone` CLI must be
+installed on the host/container and pre-configured (for example via
+`rclone config`).
+
+Docker build installs a custom `rclone` binary via script URL (default is the
+same source used by `leech-bot`):
+
+```bash
+docker build \
+  --build-arg MEDIA_SHUTTLE_RCLONE_INSTALL_SCRIPT_URL=https://raw.githubusercontent.com/wiserain/rclone/mod/install.sh \
+  -t media-shuttle-core .
+```
+
+If your team uses a private `rclone` build (for example with 115 support),
+replace the build-arg URL with your private install script URL.
+
+## 3. Run worker
 
 ```bash
 cd media-shuttle-core
-python3 -c "from core.runtime import run_forever; run_forever()"
+python3 -c "from core.queue.worker_process import run_forever; raise SystemExit(run_forever())"
+```
+
+Default `MEDIA_SHUTTLE_CORE_WORKER_ROLE=all` starts three child workers in one
+main process: `parse`, `download`, `upload`.
+
+Equivalent direct celery command:
+
+```bash
+celery -A core.queue.tasks:celery_app worker \
+  --loglevel=INFO \
+  --without-gossip \
+  --pool=solo \
+  --hostname=core-worker@media-shuttle-core \
+  --queues="${MEDIA_SHUTTLE_CORE_WORKER_QUEUES}" \
+  --concurrency="${MEDIA_SHUTTLE_CORE_CONCURRENCY:-1}"
+```
+
+When `MEDIA_SHUTTLE_CORE_WORKER_QUEUES` is empty, `worker_process.py` auto-generates
+queue subscriptions based on `MEDIA_SHUTTLE_CORE_WORKER_ROLE`.
+
+Site-sharded queues:
+
+- parse worker consumes: `media_shuttle:task_retry`, `media_shuttle:task_created`
+- download workers consume: `media_shuttle:task_download@SITE`
+- upload workers consume: `media_shuttle:task_upload@TARGET`
+
+Example: dedicate one worker to GOFILE download backlog only:
+
+```bash
+MEDIA_SHUTTLE_CORE_WORKER_QUEUES='media_shuttle:task_download@GOFILE' \
+MEDIA_SHUTTLE_CORE_WORKER_ROLE=download \
+python3 -c "from core.queue.worker_process import run_forever; raise SystemExit(run_forever())"
 ```
 
 ## 4. Notes
 
 - `mock` mode does not perform real network upload/download side effects.
 - `live` mode enables live providers and requires external dependencies/services.
+- For `RCLONE` live upload, `rclone` must be available in `PATH`.
+- Redis production path uses Celery broker queues by default.

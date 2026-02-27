@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from datetime import date
+from shutil import which
 
 from ..enums import UploadTarget
 from ..models import DownloadResult, UploadResult
@@ -30,6 +31,9 @@ def upload_telegram_mock(download: DownloadResult, destination: str) -> UploadRe
 
 
 def upload_rclone_live(download: DownloadResult, destination: str) -> UploadResult:
+    if which("rclone") is None:
+        raise RuntimeError("rclone CLI is required for RCLONE live upload but was not found in PATH")
+
     remote_name = _build_remote_name(download)
     cmd = ["rclone", "copyto", download.local_path, f"{destination}:{remote_name}"]
     subprocess.run(cmd, check=True)

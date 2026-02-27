@@ -15,13 +15,12 @@ def _download_dir() -> Path:
     return path
 
 
-def _safe_filename(name: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name) or "download.bin"
-
-
 def _materialize_path(source: ParsedSource) -> Path:
-    seed = hashlib.sha1(source.download_url.encode("utf-8")).hexdigest()[:8]
-    return _download_dir() / f"{seed}_{_safe_filename(source.file_name)}"
+    # Use temporary local name to avoid extremely long original filenames.
+    seed = hashlib.sha1(source.download_url.encode("utf-8")).hexdigest()[:16]
+    task_dir = _download_dir() / seed
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return task_dir / "tmp.part"
 
 
 def _write_mock_file(path: Path, source: ParsedSource) -> int:

@@ -18,6 +18,7 @@ services:
       - MEDIA_SHUTTLE_REDIS_URL=redis://redis:6379/0
       - MEDIA_SHUTTLE_STORAGE_BACKEND=mongo
       - MEDIA_SHUTTLE_QUEUE_BACKEND=redis
+      - MEDIA_SHUTTLE_REDIS_PUBLISH_MODE=celery
       - MEDIA_SHUTTLE_MONGO_URI=mongodb://mongo:27017
     depends_on:
       - redis
@@ -35,6 +36,9 @@ services:
       - MEDIA_SHUTTLE_CORE_CONCURRENCY=3
       - MEDIA_SHUTTLE_RETRY_QUEUE_KEY=media_shuttle:task_retry
       - MEDIA_SHUTTLE_DLQ_QUEUE_KEY=media_shuttle:task_dlq
+      - MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY=media_shuttle:task_download
+      - MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY=media_shuttle:task_upload
+      - MEDIA_SHUTTLE_CORE_WORKER_ROLE=all
     depends_on:
       - redis
       - mongo

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import socket
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -46,9 +48,36 @@ def _download_queue_for_site(site: str) -> str:
     return f"{_download_queue_prefix()}@{suffix}"
 
 
-def _upload_queue_for_target(target: str) -> str:
+def _bool_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default).strip().lower()
+    return raw not in {"", "0", "false", "off", "no"}
+
+
+def _upload_affinity_enabled() -> bool:
+    return _bool_env("MEDIA_SHUTTLE_UPLOAD_AFFINITY", "1")
+
+
+def _normalize_owner_node(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", value).upper()
+
+
+def _resolve_owner_node() -> str:
+    explicit = os.getenv("MEDIA_SHUTTLE_NODE_ID", "").strip()
+    if explicit:
+        return _normalize_owner_node(explicit)
+    return _normalize_owner_node(socket.gethostname())
+
+
+def _upload_queue_for_target(target: str, owner_node: str | None = None) -> str:
     suffix = (target or "RCLONE").upper()
-    return f"{_upload_queue_prefix()}@{suffix}"
+    queue = f"{_upload_queue_prefix()}@{suffix}"
+    owner = _normalize_owner_node(owner_node)
+    if owner and _upload_affinity_enabled():
+        return f"{queue}@{owner}"
+    return queue
 
 
 def _max_retries() -> int:
@@ -176,8 +205,6 @@ def _schedule_source_pipelines(
                 app.signature(
                     TASK_UPLOAD_RESULT,
                     args=[task_id, target, destination],
-                    queue=_upload_queue_for_target(target),
-                    routing_key=_upload_queue_for_target(target),
                 ),
             )
         )
@@ -237,16 +264,24 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
         return _route_failure(event, str(exc), task_id=task_id, app=app)
 
 
-def process_download_source_logic(event: dict[str, Any], task_id: str, source: dict[str, Any], service=None) -> dict[str, Any]:
+def process_download_source_logic(
+    event: dict[str, Any],
+    task_id: str,
+    source: dict[str, Any],
+    service=None,
+    owner_node: str | None = None,
+) -> dict[str, Any]:
     service = service or build_core_service()
     service.repository.update_status(task_id, TaskStatus.DOWNLOADING)
     parsed = ParsedSource(**source)
+    resolved_owner = _normalize_owner_node(owner_node) or _resolve_owner_node()
     try:
         download = service.pipeline.downloader_registry.download(parsed)
         return {
             "ok": True,
             "download": asdict(download),
             "source": _source_snapshot(source),
+            "owner_node": resolved_owner,
             "task_id": task_id,
             "event": event,
         }
@@ -255,6 +290,7 @@ def process_download_source_logic(event: dict[str, Any], task_id: str, source: d
             "ok": False,
             "reason": str(exc),
             "source": _source_snapshot(source),
+            "owner_node": resolved_owner,
             "task_id": task_id,
             "event": event,
         }
@@ -321,9 +357,15 @@ if celery_app is not None:
     def process_created_event(event: dict[str, Any]) -> dict[str, Any]:
         return process_created_event_logic(event=event, app=celery_app)
 
-    @celery_app.task(name=TASK_DOWNLOAD_SOURCE)
-    def process_download_source(event: dict[str, Any], task_id: str, source: dict[str, Any]) -> dict[str, Any]:
-        return process_download_source_logic(event=event, task_id=task_id, source=source)
+    @celery_app.task(name=TASK_DOWNLOAD_SOURCE, bind=True)
+    def process_download_source(self, event: dict[str, Any], task_id: str, source: dict[str, Any]) -> dict[str, Any]:
+        # Resolve node on worker side so upload can be routed back to the same host.
+        return process_download_source_logic(
+            event=event,
+            task_id=task_id,
+            source=source,
+            owner_node=_resolve_owner_node(),
+        )
 
     @celery_app.task(name=TASK_UPLOAD_RESULT)
     def process_upload_result(download_packet: dict[str, Any], task_id: str, target: str, destination: str) -> dict[str, Any]:

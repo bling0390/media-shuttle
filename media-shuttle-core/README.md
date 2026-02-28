@@ -40,6 +40,8 @@ export MEDIA_SHUTTLE_CREATED_QUEUE_KEY='media_shuttle:task_created'
 export MEDIA_SHUTTLE_RETRY_QUEUE_KEY='media_shuttle:task_retry'
 export MEDIA_SHUTTLE_DLQ_QUEUE_KEY='media_shuttle:task_dlq'
 export MEDIA_SHUTTLE_GOFILE_TOKEN='' # optional static gofile token for live mode
+export MEDIA_SHUTTLE_UPLOAD_AFFINITY=1 # route upload task to downloader host queue
+export MEDIA_SHUTTLE_NODE_ID='' # optional stable node id; defaults to hostname
 ```
 
 When running in `live` mode with `target=RCLONE`, the `rclone` CLI must be
@@ -88,6 +90,9 @@ Site-sharded queues:
 - parse worker consumes: `media_shuttle:task_retry`, `media_shuttle:task_created`
 - download workers consume: `media_shuttle:task_download@SITE`
 - upload workers consume: `media_shuttle:task_upload@TARGET`
+- when `MEDIA_SHUTTLE_UPLOAD_AFFINITY=1`, upload workers also consume
+  `media_shuttle:task_upload@TARGET@NODE` for current node; download output
+  is routed back to this queue to keep download/upload on same host.
 
 Example: dedicate one worker to GOFILE download backlog only:
 

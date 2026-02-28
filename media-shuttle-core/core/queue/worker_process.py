@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import socket
 import subprocess
 import time
 
@@ -26,6 +28,29 @@ def _upload_queue_prefix() -> str:
 def _csv_env(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
     return [item.strip().upper() for item in raw.split(",") if item.strip()]
+
+
+def _bool_env(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name, default).strip().lower()
+    return raw not in {"", "0", "false", "off", "no"}
+
+
+def _upload_affinity_enabled() -> bool:
+    return _bool_env("MEDIA_SHUTTLE_UPLOAD_AFFINITY", "1")
+
+
+def _normalize_owner_node(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", value).upper()
+
+
+def _resolve_owner_node() -> str:
+    explicit = os.getenv("MEDIA_SHUTTLE_NODE_ID", "").strip()
+    if explicit:
+        return _normalize_owner_node(explicit)
+    return _normalize_owner_node(socket.gethostname())
 
 
 def _worker_concurrency(worker_role: str) -> int:
@@ -78,7 +103,12 @@ def generate_download_queue_names() -> list[str]:
 def generate_upload_queue_names() -> list[str]:
     targets = _csv_env("MEDIA_SHUTTLE_UPLOAD_QUEUE_SUFFIXES", "RCLONE,TELEGRAM")
     prefix = _upload_queue_prefix()
-    return [f"{prefix}@{target}" for target in targets]
+    queues = [f"{prefix}@{target}" for target in targets]
+    if _upload_affinity_enabled():
+        owner = _resolve_owner_node()
+        if owner:
+            queues.extend([f"{prefix}@{target}@{owner}" for target in targets])
+    return queues
 
 
 def generate_queue_names(worker_role: str = "all") -> str:

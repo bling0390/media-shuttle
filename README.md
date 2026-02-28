@@ -128,6 +128,8 @@ Examples:
   - `MEDIA_SHUTTLE_CORE_WORKER_QUEUES` (explicit queue override)
   - `MEDIA_SHUTTLE_SITE_QUEUE_SUFFIXES`
   - `MEDIA_SHUTTLE_UPLOAD_QUEUE_SUFFIXES`
+  - `MEDIA_SHUTTLE_UPLOAD_AFFINITY` (default `1`, route upload task back to downloader host queue)
+  - `MEDIA_SHUTTLE_NODE_ID` (optional, stable node identity used by affinity routing; falls back to hostname)
   - `MEDIA_SHUTTLE_DOWNLOAD_DIR`
 - Provider dynamic loading:
   - `MEDIA_SHUTTLE_EXTRA_PROVIDER_MODULES`

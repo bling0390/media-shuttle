@@ -50,11 +50,13 @@
 - `MEDIA_SHUTTLE_MONGO_URI` default: `mongodb://localhost:27017`
 - `MEDIA_SHUTTLE_MONGO_DB` default: `media_shuttle`
 - `MEDIA_SHUTTLE_MONGO_TASK_COLLECTION` default: `tasks`
+- `MEDIA_SHUTTLE_MONGO_WORKER_COLLECTION` default: `workers`
 - `MEDIA_SHUTTLE_REDIS_URL` default: `redis://localhost:6379/0`
 - `MEDIA_SHUTTLE_CREATED_QUEUE_KEY` default: `media_shuttle:task_created`
 - `MEDIA_SHUTTLE_RETRY_QUEUE_KEY` default: `media_shuttle:task_retry`
 - `MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY` default: `media_shuttle:task_download`
 - `MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY` default: `media_shuttle:task_upload`
+- `MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY` default: `media_shuttle:worker_control`
 - `MEDIA_SHUTTLE_REDIS_PUBLISH_MODE` default: `celery` (`celery|redis_list`)
 - `MEDIA_SHUTTLE_MAX_RETRIES` default: `2`
 - `MEDIA_SHUTTLE_CORE_CONCURRENCY` default: `1`
@@ -109,6 +111,7 @@ Examples:
   - `MEDIA_SHUTTLE_MONGO_URI`
   - `MEDIA_SHUTTLE_MONGO_DB`
   - `MEDIA_SHUTTLE_MONGO_TASK_COLLECTION`
+  - `MEDIA_SHUTTLE_MONGO_WORKER_COLLECTION`
 - Redis:
   - `MEDIA_SHUTTLE_REDIS_URL`
   - `MEDIA_SHUTTLE_REDIS_PUBLISH_MODE`
@@ -116,6 +119,8 @@ Examples:
   - `MEDIA_SHUTTLE_RETRY_QUEUE_KEY`
   - `MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY`
   - `MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY`
+  - `MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY`
+  - `MEDIA_SHUTTLE_CORE_WORKER_CONTROL_TASK_NAME`
 - Core runtime:
   - `MEDIA_SHUTTLE_IO_MODE=mock|live`
   - `MEDIA_SHUTTLE_GOFILE_TOKEN` (optional; if set, reuse token instead of creating temporary account token)
@@ -124,6 +129,7 @@ Examples:
   - `MEDIA_SHUTTLE_CORE_POLL_SECONDS`
   - `MEDIA_SHUTTLE_CORE_WORKER_ROLE=all|parse|download|upload`
   - `MEDIA_SHUTTLE_CORE_WORKER_QUEUES` (explicit queue override)
+  - `MEDIA_SHUTTLE_WORKER_REGISTRY_ENABLED` (default `1`, persist worker status to Mongo when storage backend is `mongo`)
   - `MEDIA_SHUTTLE_SITE_QUEUE_SUFFIXES`
   - `MEDIA_SHUTTLE_UPLOAD_QUEUE_SUFFIXES`
   - `MEDIA_SHUTTLE_UPLOAD_AFFINITY` (default `1`, route upload task back to downloader host queue)

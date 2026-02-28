@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path("media-shuttle-api").resolve()))
 sys.path.insert(0, str(Path("tests").resolve()))
 
 from app.queue import RedisTaskPublisher
+from app.worker_control import CeleryWorkerControl
 from fakes import FakeRedis
 
 
@@ -56,6 +57,30 @@ class TestApiCeleryPublish(unittest.TestCase):
         publisher.publish_created_event(event)
         got = publisher.pop_created_event(timeout_seconds=0)
         self.assertEqual(got["task_id"], "t2")
+
+    def test_worker_control_should_publish_node_targeted_control_task(self):
+        fake_celery = _FakeCeleryApp()
+        control = CeleryWorkerControl(
+            redis_url="redis://localhost:6379/0",
+            celery_app=fake_celery,
+            control_queue_prefix="media_shuttle:worker_control",
+            control_task_name="core.queue.tasks.apply_worker_control",
+        )
+
+        out = control.publish_control_command(
+            node_id="node-a",
+            role="parse",
+            action="start",
+            concurrency=2,
+        )
+
+        self.assertTrue(out["accepted"])
+        self.assertEqual(len(fake_celery.calls), 1)
+        self.assertEqual(fake_celery.calls[0]["name"], "core.queue.tasks.apply_worker_control")
+        self.assertEqual(fake_celery.calls[0]["queue"], "media_shuttle:worker_control@NODE-A")
+        payload = fake_celery.calls[0]["args"][0]
+        self.assertEqual(payload["role"], "parse")
+        self.assertEqual(payload["action"], "start")
 
 
 if __name__ == "__main__":

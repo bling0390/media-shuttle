@@ -48,7 +48,16 @@ def admin_workers(body: dict):
         worker=body.get("worker", ""),
         queue=body.get("queue", ""),
         concurrency=int(body.get("concurrency", 1)),
+        action=body.get("action", "set"),
+        node_id=body.get("node_id", ""),
+        role=body.get("role", ""),
     )
+
+
+@app.get("/v1/admin/workers")
+def list_workers(status: str | None = None, limit: int = Query(default=100, ge=1, le=500), refresh: bool = True):
+    items = container.service.list_workers(status=status, limit=limit, refresh=refresh)
+    return {"items": [item.__dict__ for item in items], "total": len(items)}
 
 
 @app.post("/v1/admin/rate-limit")

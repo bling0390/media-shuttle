@@ -11,7 +11,6 @@ from ..bootstrap import build_core_service
 from ..enums import SourceSite, TaskStatus
 from ..models import DownloadResult, ParsedSource
 from .celery_app import build_celery_app
-from .publisher import RedisEventPublisher
 
 TASK_PARSE_CREATED = "core.queue.tasks.process_created_event"
 TASK_DOWNLOAD_SOURCE = "core.queue.tasks.process_download_source"
@@ -31,30 +30,13 @@ def _retry_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_RETRY_QUEUE_KEY", "media_shuttle:task_retry")
 
 
-def _dlq_queue_key() -> str:
-    return os.getenv("MEDIA_SHUTTLE_DLQ_QUEUE_KEY", "media_shuttle:task_dlq")
-
-
 def _download_queue_prefix() -> str:
     return os.getenv("MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY", "media_shuttle:task_download")
-
-
-def _upload_queue_prefix() -> str:
-    return os.getenv("MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY", "media_shuttle:task_upload")
 
 
 def _download_queue_for_site(site: str) -> str:
     suffix = (site or SourceSite.GENERIC.value).upper()
     return f"{_download_queue_prefix()}@{suffix}"
-
-
-def _bool_env(name: str, default: str = "0") -> bool:
-    raw = os.getenv(name, default).strip().lower()
-    return raw not in {"", "0", "false", "off", "no"}
-
-
-def _upload_affinity_enabled() -> bool:
-    return _bool_env("MEDIA_SHUTTLE_UPLOAD_AFFINITY", "1")
 
 
 def _normalize_owner_node(raw: str | None) -> str:
@@ -69,15 +51,6 @@ def _resolve_owner_node() -> str:
     if explicit:
         return _normalize_owner_node(explicit)
     return _normalize_owner_node(socket.gethostname())
-
-
-def _upload_queue_for_target(target: str, owner_node: str | None = None) -> str:
-    suffix = (target or "RCLONE").upper()
-    queue = f"{_upload_queue_prefix()}@{suffix}"
-    owner = _normalize_owner_node(owner_node)
-    if owner and _upload_affinity_enabled():
-        return f"{queue}@{owner}"
-    return queue
 
 
 def _max_retries() -> int:
@@ -141,13 +114,8 @@ def _route_failure(event: dict[str, Any], reason: str, task_id: str | None, app)
             "attempt": next_attempt,
             "reason": reason,
         }
-
-    base["dead_lettered_at"] = _utc_now_iso()
-    RedisEventPublisher(redis_url=os.getenv("MEDIA_SHUTTLE_REDIS_URL", "redis://localhost:6379/0")).publish(
-        _dlq_queue_key(), base
-    )
     return {
-        "state": "dead_lettered",
+        "state": "failed",
         "task_id": base.get("task_id"),
         "attempt": next_attempt,
         "reason": reason,

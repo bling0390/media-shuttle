@@ -40,6 +40,40 @@ class TestApiService(unittest.TestCase):
         items = self.container.service.list_tasks(status="QUEUED", limit=10)
         self.assertGreaterEqual(len(items), 1)
 
+    def test_admin_retry_should_requeue_failed_tasks(self):
+        request = CreateTaskRequest(
+            url="https://example.com/retry.mp4",
+            requester_id="u-retry",
+            target="RCLONE",
+            destination="/incoming",
+        )
+        created = self.container.service.create_parse_task(request)
+        self.container.repository.update_status(created.task_id, "FAILED", "forced")
+
+        out = self.container.service.admin_retry_action(mode="failed")
+        self.assertTrue(out["accepted"])
+        self.assertEqual(out["retried"], 1)
+        self.assertIn(created.task_id, out["task_ids"])
+
+        task = self.container.service.get_task(created.task_id)
+        self.assertIsNotNone(task)
+        self.assertEqual(task.status, "QUEUED")
+        # first publish on create, second publish on manual retry
+        self.assertEqual(len(self.container.publisher.items), 2)
+
+    def test_admin_retry_should_reject_non_failed_task(self):
+        request = CreateTaskRequest(
+            url="https://example.com/no-retry.mp4",
+            requester_id="u-no-retry",
+            target="RCLONE",
+            destination="/incoming",
+        )
+        created = self.container.service.create_parse_task(request)
+
+        out = self.container.service.admin_retry_action(mode="failed", task_id=created.task_id)
+        self.assertFalse(out["accepted"])
+        self.assertEqual(out["reason"], "task_not_failed")
+
 
 if __name__ == "__main__":
     unittest.main()

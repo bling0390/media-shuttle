@@ -53,7 +53,6 @@
 - `MEDIA_SHUTTLE_REDIS_URL` default: `redis://localhost:6379/0`
 - `MEDIA_SHUTTLE_CREATED_QUEUE_KEY` default: `media_shuttle:task_created`
 - `MEDIA_SHUTTLE_RETRY_QUEUE_KEY` default: `media_shuttle:task_retry`
-- `MEDIA_SHUTTLE_DLQ_QUEUE_KEY` default: `media_shuttle:task_dlq`
 - `MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY` default: `media_shuttle:task_download`
 - `MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY` default: `media_shuttle:task_upload`
 - `MEDIA_SHUTTLE_REDIS_PUBLISH_MODE` default: `celery` (`celery|redis_list`)
@@ -115,7 +114,6 @@ Examples:
   - `MEDIA_SHUTTLE_REDIS_PUBLISH_MODE`
   - `MEDIA_SHUTTLE_CREATED_QUEUE_KEY`
   - `MEDIA_SHUTTLE_RETRY_QUEUE_KEY`
-  - `MEDIA_SHUTTLE_DLQ_QUEUE_KEY`
   - `MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY`
   - `MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY`
 - Core runtime:

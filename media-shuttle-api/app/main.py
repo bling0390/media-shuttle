@@ -62,7 +62,11 @@ def admin_rate_limit(body: dict):
 
 @app.post("/v1/admin/retry")
 def admin_retry(body: dict):
-    return container.service.admin_retry_action(mode=body.get("mode", "both"))
+    return container.service.admin_retry_action(
+        mode=body.get("mode", "failed"),
+        task_id=body.get("task_id"),
+        limit=int(body.get("limit", 20)),
+    )
 
 
 @app.post("/v1/admin/settings")

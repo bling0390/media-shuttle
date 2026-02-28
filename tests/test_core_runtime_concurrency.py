@@ -45,7 +45,6 @@ class TestCoreRuntimeConcurrency(unittest.TestCase):
                 max_retries=1,
                 created_queue_key="media_shuttle:task_created",
                 retry_queue_key="media_shuttle:task_retry",
-                dlq_queue_key="media_shuttle:task_dlq",
                 concurrency=3,
                 poll_seconds=0,
             ),

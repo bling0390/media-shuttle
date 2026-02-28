@@ -15,7 +15,7 @@ from fakes import FakeMongoClient, FakeRedis
 
 
 class TestCoreRetryDlq(unittest.TestCase):
-    def test_failed_task_should_retry_then_dead_letter(self):
+    def test_failed_task_should_retry_then_stop_without_dead_letter(self):
         fake_mongo = FakeMongoClient()
         fake_redis = FakeRedis()
 
@@ -47,7 +47,6 @@ class TestCoreRetryDlq(unittest.TestCase):
                 max_retries=2,
                 created_queue_key="media_shuttle:task_created",
                 retry_queue_key="media_shuttle:task_retry",
-                dlq_queue_key="media_shuttle:task_dlq",
                 concurrency=1,
                 poll_seconds=0,
             ),
@@ -63,9 +62,9 @@ class TestCoreRetryDlq(unittest.TestCase):
         self.assertEqual(fake_redis.llen("media_shuttle:task_retry"), 1)
 
         out3 = runtime.process_one(timeout_seconds=0)
-        self.assertEqual(out3["state"], "dead_lettered")
+        self.assertEqual(out3["state"], "failed")
         self.assertEqual(fake_redis.llen("media_shuttle:task_retry"), 0)
-        self.assertEqual(fake_redis.llen("media_shuttle:task_dlq"), 1)
+        self.assertEqual(fake_redis.llen("media_shuttle:task_dlq"), 0)
 
         task = api.service.get_task(created.task_id)
         self.assertIsNotNone(task)

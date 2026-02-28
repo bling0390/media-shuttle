@@ -10,7 +10,7 @@ This document records the current delivery status of the `media-shuttle` modular
 
 1. `media-shuttle-core`
 - Decoupled parse/download/upload worker pipeline.
-- Queue consumption with retry and DLQ handling.
+- Queue consumption with automatic retry and manual failed-task retry support.
 - Site-level parser/downloader routing for common providers (`gofile`, `bunkr`, `cyberdrop`, `pixeldrain`, `drive`, `mega`, `mediafire`, `coomer/kemono`, and generic direct links).
 - `mock/live` mode support.
 - Pluggable provider loading (builtin + dynamic modules).

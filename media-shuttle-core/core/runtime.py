@@ -18,7 +18,6 @@ class RuntimeConfig:
     queue_backend: str = "memory"
     created_queue_key: str = "media_shuttle:task_created"
     retry_queue_key: str = "media_shuttle:task_retry"
-    dlq_queue_key: str = "media_shuttle:task_dlq"
     max_retries: int = 2
     concurrency: int = 1
     poll_seconds: float = 1.0
@@ -29,7 +28,6 @@ class RuntimeConfig:
             queue_backend=os.getenv("MEDIA_SHUTTLE_QUEUE_BACKEND", "memory").lower(),
             created_queue_key=os.getenv("MEDIA_SHUTTLE_CREATED_QUEUE_KEY", "media_shuttle:task_created"),
             retry_queue_key=os.getenv("MEDIA_SHUTTLE_RETRY_QUEUE_KEY", "media_shuttle:task_retry"),
-            dlq_queue_key=os.getenv("MEDIA_SHUTTLE_DLQ_QUEUE_KEY", "media_shuttle:task_dlq"),
             max_retries=int(os.getenv("MEDIA_SHUTTLE_MAX_RETRIES", "2")),
             concurrency=max(1, int(os.getenv("MEDIA_SHUTTLE_CORE_CONCURRENCY", "1"))),
             poll_seconds=float(os.getenv("MEDIA_SHUTTLE_CORE_POLL_SECONDS", "1.0")),
@@ -73,7 +71,6 @@ class CoreRuntime:
             self.publisher = InMemoryEventPublisher(
                 {
                     self.config.retry_queue_key: self.retry_consumer._items,
-                    self.config.dlq_queue_key: [],
                 }
             )
 
@@ -103,11 +100,8 @@ class CoreRuntime:
                 "attempt": next_attempt,
                 "reason": reason,
             }
-
-        base["dead_lettered_at"] = _utc_now_iso()
-        self.publisher.publish(self.config.dlq_queue_key, base)
         return {
-            "state": "dead_lettered",
+            "state": "failed",
             "task_id": base.get("task_id"),
             "attempt": next_attempt,
             "reason": reason,

@@ -69,8 +69,84 @@ class ApiService:
     def admin_rate_limit_action(self, worker: str, task_type: str, rate_limit: str) -> dict:
         return {"worker": worker, "task_type": task_type, "rate_limit": rate_limit, "accepted": True}
 
-    def admin_retry_action(self, mode: str) -> dict:
-        return {"mode": mode, "accepted": True}
+    def _build_created_event(self, task: TaskRecord) -> dict:
+        return {
+            "spec_version": "task.created.v1",
+            "task_id": task.task_id,
+            "task_type": "parse_link",
+            "idempotency_key": task.idempotency_key,
+            "created_at": utc_now_iso(),
+            "payload": {
+                "url": task.url,
+                "requester_id": task.requester_id,
+                "target": task.target,
+                "destination": task.destination,
+            },
+        }
+
+    def admin_retry_action(self, mode: str, task_id: str | None = None, limit: int = 20) -> dict:
+        mode_key = (mode or "failed").strip().lower()
+        max_limit = max(1, min(int(limit), 200))
+
+        retried: list[str] = []
+        skipped = 0
+
+        if task_id:
+            task = self.repository.get(task_id)
+            if task is None:
+                return {
+                    "mode": mode_key,
+                    "task_id": task_id,
+                    "accepted": False,
+                    "reason": "task_not_found",
+                    "retried": 0,
+                    "skipped": 1,
+                }
+            if task.status != "FAILED":
+                return {
+                    "mode": mode_key,
+                    "task_id": task_id,
+                    "accepted": False,
+                    "reason": "task_not_failed",
+                    "retried": 0,
+                    "skipped": 1,
+                }
+            self.repository.update_status(task.task_id, "QUEUED", "")
+            self.publisher.publish_created_event(self._build_created_event(task))
+            return {
+                "mode": mode_key,
+                "task_id": task_id,
+                "accepted": True,
+                "retried": 1,
+                "skipped": 0,
+                "task_ids": [task.task_id],
+            }
+
+        if mode_key not in {"failed", "both"}:
+            return {
+                "mode": mode_key,
+                "accepted": False,
+                "reason": "unsupported_mode",
+                "retried": 0,
+                "skipped": 0,
+            }
+
+        failed_items = self.repository.list(status="FAILED", limit=max_limit)
+        for item in failed_items:
+            if item.status != "FAILED":
+                skipped += 1
+                continue
+            self.repository.update_status(item.task_id, "QUEUED", "")
+            self.publisher.publish_created_event(self._build_created_event(item))
+            retried.append(item.task_id)
+
+        return {
+            "mode": mode_key,
+            "accepted": True,
+            "retried": len(retried),
+            "skipped": skipped,
+            "task_ids": retried,
+        }
 
     def admin_setting_action(self, key: str, value: str) -> dict:
         return {"key": key, "value": value, "accepted": True}

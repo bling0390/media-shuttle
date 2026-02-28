@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..enums import TaskStatus
 from ..models import TaskPayload, TaskRecord, utc_now
@@ -24,6 +24,16 @@ class TaskRepository:
         raise NotImplementedError
 
     def queue_stats(self) -> dict[str, int]:
+        raise NotImplementedError
+
+    def update_runtime_fields(
+        self,
+        task_id: str,
+        *,
+        sources: list[dict[str, Any]] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        last_error: str | None = None,
+    ) -> TaskRecord | None:
         raise NotImplementedError
 
 
@@ -66,6 +76,27 @@ class InMemoryTaskRepository(TaskRepository):
             upload = len([x for x in self._items.values() if x.status == TaskStatus.UPLOADING])
         return {"parse": parse, "download": download, "upload": upload}
 
+    def update_runtime_fields(
+        self,
+        task_id: str,
+        *,
+        sources: list[dict[str, Any]] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        last_error: str | None = None,
+    ) -> TaskRecord | None:
+        with self._lock:
+            record = self._items.get(task_id)
+            if not record:
+                return None
+            if sources is not None:
+                record.sources = list(sources)
+            if artifacts is not None:
+                record.artifacts = list(artifacts)
+            if last_error is not None:
+                record.last_error = last_error
+            record.updated_at = utc_now()
+            return replace(record)
+
 
 def _parse_datetime(raw: datetime | str) -> datetime:
     if isinstance(raw, datetime):
@@ -103,6 +134,9 @@ class MongoTaskRepository(TaskRepository):
             "idempotency_key": record.idempotency_key,
             "status": record.status.value,
             "message": record.message,
+            "sources": list(record.sources),
+            "artifacts": list(record.artifacts),
+            "last_error": record.last_error,
             "requester_id": record.payload.requester_id,
             "url": record.payload.url,
             "target": record.payload.target,
@@ -126,6 +160,9 @@ class MongoTaskRepository(TaskRepository):
             ),
             status=TaskStatus(doc["status"]),
             message=doc.get("message", ""),
+            sources=[item for item in doc.get("sources", []) if isinstance(item, dict)],
+            artifacts=[item for item in doc.get("artifacts", []) if isinstance(item, dict)],
+            last_error=doc.get("last_error", ""),
             created_at=_parse_datetime(doc["created_at"]),
             updated_at=_parse_datetime(doc["updated_at"]),
         )
@@ -162,3 +199,24 @@ class MongoTaskRepository(TaskRepository):
             "download": self._collection.count_documents({"status": TaskStatus.DOWNLOADING.value}),
             "upload": self._collection.count_documents({"status": TaskStatus.UPLOADING.value}),
         }
+
+    def update_runtime_fields(
+        self,
+        task_id: str,
+        *,
+        sources: list[dict[str, Any]] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        last_error: str | None = None,
+    ) -> TaskRecord | None:
+        patch: dict[str, Any] = {}
+        if sources is not None:
+            patch["sources"] = list(sources)
+        if artifacts is not None:
+            patch["artifacts"] = list(artifacts)
+        if last_error is not None:
+            patch["last_error"] = last_error
+        if not patch:
+            return self.get(task_id)
+        patch["updated_at"] = _isoformat(utc_now())
+        self._collection.update_one({"_id": task_id}, {"$set": patch})
+        return self.get(task_id)

@@ -70,6 +70,7 @@ class TestCoreRetryDlq(unittest.TestCase):
         task = api.service.get_task(created.task_id)
         self.assertIsNotNone(task)
         self.assertEqual(task.status, "FAILED")
+        self.assertTrue(task.last_error)
 
 
 if __name__ == "__main__":

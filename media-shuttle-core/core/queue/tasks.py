@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..bootstrap import build_core_service
-from ..enums import TaskStatus
+from ..enums import SourceSite, TaskStatus
 from ..models import DownloadResult, ParsedSource
 from .celery_app import build_celery_app
 from .publisher import RedisEventPublisher
@@ -42,7 +42,7 @@ def _upload_queue_prefix() -> str:
 
 
 def _download_queue_for_site(site: str) -> str:
-    suffix = (site or "GENERIC").upper()
+    suffix = (site or SourceSite.GENERIC.value).upper()
     return f"{_download_queue_prefix()}@{suffix}"
 
 
@@ -53,6 +53,38 @@ def _upload_queue_for_target(target: str) -> str:
 
 def _max_retries() -> int:
     return int(os.getenv("MEDIA_SHUTTLE_MAX_RETRIES", "2"))
+
+
+def _source_snapshot(source: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "site": source.get("site", ""),
+        "page_url": source.get("page_url", ""),
+        "download_url": source.get("download_url", ""),
+        "file_name": source.get("file_name", ""),
+        "remote_folder": source.get("remote_folder"),
+        "metadata": dict(source.get("metadata") or {}),
+    }
+
+
+def _build_artifacts(upload_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for item in upload_results:
+        source = item.get("source") or {}
+        download = item.get("download") or {}
+        artifacts.append(
+            {
+                "ok": bool(item.get("ok")),
+                "reason": item.get("reason", ""),
+                "site": source.get("site") or download.get("site") or "",
+                "page_url": source.get("page_url", ""),
+                "declared_download_url": source.get("download_url", ""),
+                "actual_download_url": download.get("source_url", ""),
+                "file_name": source.get("file_name") or download.get("file_name") or "",
+                "remote_folder": source.get("remote_folder") or download.get("remote_folder"),
+                "location": item.get("location", ""),
+            }
+        )
+    return artifacts
 
 
 def _route_failure(event: dict[str, Any], reason: str, task_id: str | None, app) -> dict[str, Any]:
@@ -172,6 +204,12 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
         parsed_sources = service.pipeline.parser_registry.parse(payload.url)
         if not parsed_sources:
             raise ValueError("no parsed source found")
+        service.repository.update_runtime_fields(
+            task_id,
+            sources=[_source_snapshot(asdict(source)) for source in parsed_sources],
+            artifacts=[],
+            last_error="",
+        )
 
         service.repository.update_status(task_id, TaskStatus.DOWNLOADING)
         immediate_result = _schedule_source_pipelines(
@@ -195,6 +233,7 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
         task_id = event.get("task_id")
         if task_id:
             service.repository.update_status(task_id, TaskStatus.FAILED, str(exc))
+            service.repository.update_runtime_fields(task_id, last_error=str(exc))
         return _route_failure(event, str(exc), task_id=task_id, app=app)
 
 
@@ -204,9 +243,21 @@ def process_download_source_logic(event: dict[str, Any], task_id: str, source: d
     parsed = ParsedSource(**source)
     try:
         download = service.pipeline.downloader_registry.download(parsed)
-        return {"ok": True, "download": asdict(download), "task_id": task_id, "event": event}
+        return {
+            "ok": True,
+            "download": asdict(download),
+            "source": _source_snapshot(source),
+            "task_id": task_id,
+            "event": event,
+        }
     except Exception as exc:
-        return {"ok": False, "reason": str(exc), "task_id": task_id, "event": event}
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "source": _source_snapshot(source),
+            "task_id": task_id,
+            "event": event,
+        }
 
 
 def process_upload_result_logic(
@@ -220,11 +271,20 @@ def process_upload_result_logic(
     download = DownloadResult(**download_packet["download"])
     try:
         upload = service.pipeline.uploader_registry.upload(target, download, destination)
-        return {"ok": True, "location": upload.location, "task_id": task_id, "event": download_packet.get("event")}
+        return {
+            "ok": True,
+            "location": upload.location,
+            "download": download_packet.get("download"),
+            "source": download_packet.get("source"),
+            "task_id": task_id,
+            "event": download_packet.get("event"),
+        }
     except Exception as exc:
         return {
             "ok": False,
             "reason": str(exc),
+            "download": download_packet.get("download"),
+            "source": download_packet.get("source"),
             "task_id": task_id,
             "event": download_packet.get("event"),
         }
@@ -232,15 +292,18 @@ def process_upload_result_logic(
 
 def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dict[str, Any], task_id: str, app, service=None) -> dict:
     service = service or build_core_service()
+    artifacts = _build_artifacts(upload_results)
     failed = [item for item in upload_results if not item.get("ok")]
     if failed:
         reason = failed[0].get("reason", "failed")
         service.repository.update_status(task_id, TaskStatus.FAILED, reason)
+        service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error=reason)
         return _route_failure(event, reason, task_id=task_id, app=app)
 
     locations = [item["location"] for item in upload_results if item.get("location")]
     message = locations[0] if len(locations) == 1 else "\n".join(locations)
     service.repository.update_status(task_id, TaskStatus.SUCCEEDED, message=message)
+    service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error="")
     return {
         "state": "succeeded",
         "task_id": task_id,

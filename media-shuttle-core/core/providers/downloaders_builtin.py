@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from ..enums import SourceSite
 from ..models import DownloadResult, ParsedSource
 from .types import DownloadProvider
 
@@ -37,10 +40,10 @@ def _http_download(url: str, path: Path, headers: dict[str, str] | None = None) 
     return len(data)
 
 
-def _result(source: ParsedSource, output: Path, size: int) -> DownloadResult:
+def _result(source: ParsedSource, output: Path, size: int, source_url: str | None = None) -> DownloadResult:
     return DownloadResult(
         site=source.site,
-        source_url=source.download_url,
+        source_url=source_url or source.download_url,
         local_path=str(output),
         size_bytes=size,
         file_name=source.file_name,
@@ -53,9 +56,14 @@ def download_mock(source: ParsedSource) -> DownloadResult:
     return _result(source, output, _write_mock_file(output, source))
 
 
-def download_live_generic(source: ParsedSource, headers: dict[str, str] | None = None) -> DownloadResult:
+def download_live_generic(
+    source: ParsedSource,
+    headers: dict[str, str] | None = None,
+    actual_url: str | None = None,
+) -> DownloadResult:
+    url = actual_url or source.download_url
     output = _materialize_path(source)
-    return _result(source, output, _http_download(source.download_url, output, headers=headers))
+    return _result(source, output, _http_download(url, output, headers=headers), source_url=url)
 
 
 def download_gofile_live(source: ParsedSource) -> DownloadResult:
@@ -66,13 +74,40 @@ def download_gofile_live(source: ParsedSource) -> DownloadResult:
     return download_live_generic(source, headers=headers)
 
 
+def _is_direct_file_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return bool(re.search(r"\.(mp4|mov|mkv|avi|webm|jpg|jpeg|png|gif|zip|rar|7z|tar|gz|pdf|mp3|m4a)(?:$|/)", path))
+
+
+def _resolve_bunkr_actual_url(source: ParsedSource) -> str:
+    parsed = urlparse(source.download_url)
+    path = parsed.path.lower()
+    if _is_direct_file_url(source.download_url):
+        return source.download_url
+    if "/f/" not in path and "/v/" not in path:
+        return source.download_url
+
+    req = Request(source.download_url, headers={"User-Agent": "media-shuttle-core", "Referer": source.page_url})
+    with urlopen(req, timeout=30) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+
+    # Bunkr pages may embed direct media links in src/href/json fields.
+    candidates = re.findall(r"https?://[^\s\"'<>]+", html)
+    for raw in candidates:
+        candidate = raw.replace("\\/", "/")
+        if _is_direct_file_url(candidate):
+            return candidate
+    return source.download_url
+
+
 def download_bunkr_live(source: ParsedSource) -> DownloadResult:
     headers = {
         "User-Agent": "media-shuttle-core",
         "Referer": source.page_url,
         "Range": "bytes=0-",
     }
-    return download_live_generic(source, headers=headers)
+    actual_url = _resolve_bunkr_actual_url(source)
+    return download_live_generic(source, headers=headers, actual_url=actual_url)
 
 
 def download_cyberdrop_live(source: ParsedSource) -> DownloadResult:
@@ -115,33 +150,69 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
     if mode == "live":
         providers.extend(
             [
-                DownloadProvider("gofile_live", "live", lambda source: source.site == "GOFILE", download_gofile_live),
-                DownloadProvider("bunkr_live", "live", lambda source: source.site == "BUNKR", download_bunkr_live),
-                DownloadProvider("cyberdrop_live", "live", lambda source: source.site == "CYBERDROP", download_cyberdrop_live),
-                DownloadProvider("cyberfile_live", "live", lambda source: source.site == "CYBERFILE", download_cyberfile_live),
-                DownloadProvider("pixeldrain_live", "live", lambda source: source.site == "PIXELDRAIN", download_pixeldrain_live),
-                DownloadProvider("gd_live", "live", lambda source: source.site == "GD", download_gd_live),
-                DownloadProvider("mediafire_live", "live", lambda source: source.site == "MEDIAFIRE", download_mediafire_live),
-                DownloadProvider("saint_live", "live", lambda source: source.site == "SAINT", download_saint_live),
-                DownloadProvider("coomer_live", "live", lambda source: source.site == "COOMER", download_coomer_live),
-                DownloadProvider("mega_live", "live", lambda source: source.site == "MEGA", download_unsupported_live),
-                DownloadProvider("ytdl_live", "live", lambda source: source.site == "YTDL", download_unsupported_live),
+                DownloadProvider(
+                    "gofile_live", "live", lambda source: source.site == SourceSite.GOFILE.value, download_gofile_live
+                ),
+                DownloadProvider(
+                    "bunkr_live", "live", lambda source: source.site == SourceSite.BUNKR.value, download_bunkr_live
+                ),
+                DownloadProvider(
+                    "cyberdrop_live",
+                    "live",
+                    lambda source: source.site == SourceSite.CYBERDROP.value,
+                    download_cyberdrop_live,
+                ),
+                DownloadProvider(
+                    "cyberfile_live",
+                    "live",
+                    lambda source: source.site == SourceSite.CYBERFILE.value,
+                    download_cyberfile_live,
+                ),
+                DownloadProvider(
+                    "pixeldrain_live",
+                    "live",
+                    lambda source: source.site == SourceSite.PIXELDRAIN.value,
+                    download_pixeldrain_live,
+                ),
+                DownloadProvider("gd_live", "live", lambda source: source.site == SourceSite.GD.value, download_gd_live),
+                DownloadProvider(
+                    "mediafire_live",
+                    "live",
+                    lambda source: source.site == SourceSite.MEDIAFIRE.value,
+                    download_mediafire_live,
+                ),
+                DownloadProvider(
+                    "saint_live", "live", lambda source: source.site == SourceSite.SAINT.value, download_saint_live
+                ),
+                DownloadProvider(
+                    "coomer_live", "live", lambda source: source.site == SourceSite.COOMER.value, download_coomer_live
+                ),
+                DownloadProvider("mega_live", "live", lambda source: source.site == SourceSite.MEGA.value, download_unsupported_live),
+                DownloadProvider("ytdl_live", "live", lambda source: source.site == SourceSite.YTDL.value, download_unsupported_live),
             ]
         )
 
     providers.extend(
         [
-            DownloadProvider("gofile_mock", "mock", lambda source: source.site == "GOFILE", download_mock),
-            DownloadProvider("bunkr_mock", "mock", lambda source: source.site == "BUNKR", download_mock),
-            DownloadProvider("cyberdrop_mock", "mock", lambda source: source.site == "CYBERDROP", download_mock),
-            DownloadProvider("cyberfile_mock", "mock", lambda source: source.site == "CYBERFILE", download_mock),
-            DownloadProvider("pixeldrain_mock", "mock", lambda source: source.site == "PIXELDRAIN", download_mock),
-            DownloadProvider("gd_mock", "mock", lambda source: source.site == "GD", download_mock),
-            DownloadProvider("mega_mock", "mock", lambda source: source.site == "MEGA", download_mock),
-            DownloadProvider("saint_mock", "mock", lambda source: source.site == "SAINT", download_mock),
-            DownloadProvider("coomer_mock", "mock", lambda source: source.site == "COOMER", download_mock),
-            DownloadProvider("mediafire_mock", "mock", lambda source: source.site == "MEDIAFIRE", download_mock),
-            DownloadProvider("ytdl_mock", "mock", lambda source: source.site == "YTDL", download_mock),
+            DownloadProvider("gofile_mock", "mock", lambda source: source.site == SourceSite.GOFILE.value, download_mock),
+            DownloadProvider("bunkr_mock", "mock", lambda source: source.site == SourceSite.BUNKR.value, download_mock),
+            DownloadProvider(
+                "cyberdrop_mock", "mock", lambda source: source.site == SourceSite.CYBERDROP.value, download_mock
+            ),
+            DownloadProvider(
+                "cyberfile_mock", "mock", lambda source: source.site == SourceSite.CYBERFILE.value, download_mock
+            ),
+            DownloadProvider(
+                "pixeldrain_mock", "mock", lambda source: source.site == SourceSite.PIXELDRAIN.value, download_mock
+            ),
+            DownloadProvider("gd_mock", "mock", lambda source: source.site == SourceSite.GD.value, download_mock),
+            DownloadProvider("mega_mock", "mock", lambda source: source.site == SourceSite.MEGA.value, download_mock),
+            DownloadProvider("saint_mock", "mock", lambda source: source.site == SourceSite.SAINT.value, download_mock),
+            DownloadProvider("coomer_mock", "mock", lambda source: source.site == SourceSite.COOMER.value, download_mock),
+            DownloadProvider(
+                "mediafire_mock", "mock", lambda source: source.site == SourceSite.MEDIAFIRE.value, download_mock
+            ),
+            DownloadProvider("ytdl_mock", "mock", lambda source: source.site == SourceSite.YTDL.value, download_mock),
             DownloadProvider("generic_mock", "all", lambda _source: True, download_mock),
         ]
     )

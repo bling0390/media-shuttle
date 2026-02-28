@@ -39,6 +39,7 @@ export MEDIA_SHUTTLE_MAX_RETRIES=2
 export MEDIA_SHUTTLE_CREATED_QUEUE_KEY='media_shuttle:task_created'
 export MEDIA_SHUTTLE_RETRY_QUEUE_KEY='media_shuttle:task_retry'
 export MEDIA_SHUTTLE_DLQ_QUEUE_KEY='media_shuttle:task_dlq'
+export MEDIA_SHUTTLE_GOFILE_TOKEN='' # optional static gofile token for live mode
 ```
 
 When running in `live` mode with `target=RCLONE`, the `rclone` CLI must be

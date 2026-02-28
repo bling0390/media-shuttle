@@ -27,6 +27,9 @@ class TaskRecord:
     target: str
     destination: str
     message: str = ""
+    sources: list[dict] = field(default_factory=list)
+    artifacts: list[dict] = field(default_factory=list)
+    last_error: str = ""
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
 

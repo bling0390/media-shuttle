@@ -10,6 +10,9 @@ class TestSpecs(unittest.TestCase):
         self.assertIn("/v1/tasks/{task_id}", text)
         self.assertIn("/v1/tasks", text)
         self.assertIn("/v1/stats/queue", text)
+        self.assertIn("sources:", text)
+        self.assertIn("artifacts:", text)
+        self.assertIn("last_error:", text)
 
     def test_task_created_schema_shape(self):
         schema = json.loads(Path("specs/events/task.created.v1.schema.json").read_text(encoding="utf-8"))

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import re
-from urllib.parse import urlparse
+import time
+from urllib.parse import urlencode, urlparse
+from urllib.request import Request, urlopen
 
+from ..enums import SourceSite
 from ..models import ParsedSource
 from .types import ParseProvider
 
@@ -25,6 +30,9 @@ _SITE_FILE_EXTENSIONS = {
     ".txt",
     ".csv",
 }
+
+_GOFILE_TOKEN: str = ""
+_GOFILE_TOKEN_EXPIRES_AT: int = 0
 
 
 def _host(url: str) -> str:
@@ -57,6 +65,118 @@ def _extract_drive_id(url: str) -> str | None:
         if m:
             return m.group(1)
     return None
+
+
+def _http_json(url: str, headers: dict[str, str], method: str = "GET") -> dict:
+    req = Request(url, headers=headers, method=method)
+    with urlopen(req, timeout=20) as resp:
+        payload = resp.read().decode("utf-8", errors="ignore")
+    return json.loads(payload) if payload else {}
+
+
+def _gofile_extract_id(url: str) -> str | None:
+    path = urlparse(url).path
+    segs = [item for item in path.split("/") if item]
+    if not segs:
+        return None
+    if len(segs) >= 2 and segs[0].lower() in {"d", "contents"}:
+        return segs[1]
+    return segs[-1]
+
+
+def _gofile_get_token() -> str:
+    global _GOFILE_TOKEN, _GOFILE_TOKEN_EXPIRES_AT
+
+    static_token = os.getenv("MEDIA_SHUTTLE_GOFILE_TOKEN", "").strip()
+    if static_token:
+        return static_token
+
+    now = int(time.time())
+    if _GOFILE_TOKEN and now < _GOFILE_TOKEN_EXPIRES_AT:
+        return _GOFILE_TOKEN
+
+    resp = _http_json(
+        "https://api.gofile.io/accounts",
+        headers={
+            "User-Agent": "media-shuttle-core",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+        },
+        method="POST",
+    )
+    token = str(resp.get("data", {}).get("token", "")).strip() if resp.get("status") == "ok" else ""
+    if not token:
+        raise RuntimeError("failed to get gofile token")
+
+    _GOFILE_TOKEN = token
+    _GOFILE_TOKEN_EXPIRES_AT = now + 60 * 60
+    return token
+
+
+def _gofile_list_sources(content_id: str, token: str, password: str | None = None) -> list[ParsedSource]:
+    params = {"wt": "4fd6sg89d7s6", "cache": "true"}
+    if password:
+        params["password"] = password
+
+    resp = _http_json(
+        f"https://api.gofile.io/contents/{content_id}?{urlencode(params)}",
+        headers={
+            "User-Agent": "media-shuttle-core",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Authorization": f"Bearer {token}",
+        },
+        method="GET",
+    )
+    if resp.get("status") != "ok":
+        return []
+
+    data = resp.get("data") or {}
+    folder_name = data.get("name")
+
+    if data.get("type") == "file":
+        link = str(data.get("link", "")).strip()
+        if not link:
+            return []
+        name = str(data.get("name") or content_id or "gofile.bin")
+        return [
+            ParsedSource(
+                site=SourceSite.GOFILE.value,
+                page_url=link,
+                download_url=link,
+                file_name=_safe_name(name, fallback="gofile.bin"),
+                remote_folder=None,
+                metadata={"resource_id": content_id, "token": token},
+            )
+        ]
+
+    items: list[ParsedSource] = []
+    children = data.get("children") or {}
+    for child_id, child in children.items():
+        child_type = str(child.get("type", "")).lower()
+        if child_type == "folder" and child.get("canAccess", True):
+            nested_id = str(child.get("id") or child_id)
+            items.extend(_gofile_list_sources(nested_id, token=token, password=password))
+            continue
+        if child_type != "file":
+            continue
+        link = str(child.get("link", "")).strip()
+        if not link:
+            continue
+        name = str(child.get("name") or child_id or "gofile.bin")
+        items.append(
+            ParsedSource(
+                site=SourceSite.GOFILE.value,
+                page_url=link,
+                download_url=link,
+                file_name=_safe_name(name, fallback="gofile.bin"),
+                remote_folder=folder_name,
+                metadata={"resource_id": str(child_id), "token": token},
+            )
+        )
+    return items
 
 
 # matchers
@@ -128,7 +248,7 @@ def parse_gofile(url: str) -> list[ParsedSource]:
     remote_folder = resource_id if "/d/" in urlparse(url).path else None
     return [
         ParsedSource(
-            site="GOFILE",
+            site=SourceSite.GOFILE.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"gofile_{resource_id}.bin"),
@@ -138,12 +258,23 @@ def parse_gofile(url: str) -> list[ParsedSource]:
     ]
 
 
+def parse_gofile_live(url: str) -> list[ParsedSource]:
+    content_id = _gofile_extract_id(url)
+    if not content_id:
+        return []
+    try:
+        token = _gofile_get_token()
+    except Exception:
+        return []
+    return _gofile_list_sources(content_id, token=token) or parse_gofile(url)
+
+
 def parse_bunkr(url: str) -> list[ParsedSource]:
     segs = _segments(url)
     slug = segs[-1] if segs else "unknown"
     return [
         ParsedSource(
-            site="BUNKR",
+            site=SourceSite.BUNKR.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"bunkr_{slug}.mp4"),
@@ -153,12 +284,17 @@ def parse_bunkr(url: str) -> list[ParsedSource]:
     ]
 
 
+def parse_bunkr_live(url: str) -> list[ParsedSource]:
+    # Keep page URL here; downloader resolves direct media URL when needed.
+    return parse_bunkr(url)
+
+
 def parse_mediafire(url: str) -> list[ParsedSource]:
     segs = _segments(url)
     slug = segs[-1] if segs else "unknown"
     return [
         ParsedSource(
-            site="MEDIAFIRE",
+            site=SourceSite.MEDIAFIRE.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"mediafire_{slug}.bin"),
@@ -180,7 +316,7 @@ def parse_pixeldrain(url: str) -> list[ParsedSource]:
         download_url = url
     return [
         ParsedSource(
-            site="PIXELDRAIN",
+            site=SourceSite.PIXELDRAIN.value,
             page_url=url,
             download_url=download_url,
             file_name=_safe_name(f"pixeldrain_{slug}.bin"),
@@ -195,7 +331,7 @@ def parse_gd(url: str) -> list[ParsedSource]:
         return []
     return [
         ParsedSource(
-            site="GD",
+            site=SourceSite.GD.value,
             page_url=url,
             download_url=f"https://drive.usercontent.google.com/download?id={file_id}&export=download&authuser=0",
             file_name=_safe_name(f"gd_{file_id}.bin"),
@@ -210,7 +346,7 @@ def parse_mega(url: str) -> list[ParsedSource]:
     slug = segs[-1] if segs else "file"
     return [
         ParsedSource(
-            site="MEGA",
+            site=SourceSite.MEGA.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"mega_{slug}.bin"),
@@ -224,7 +360,7 @@ def parse_cyberdrop(url: str) -> list[ParsedSource]:
     slug = segs[-1] if segs else "unknown"
     return [
         ParsedSource(
-            site="CYBERDROP",
+            site=SourceSite.CYBERDROP.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"cyberdrop_{slug}.bin"),
@@ -238,7 +374,7 @@ def parse_cyberfile(url: str) -> list[ParsedSource]:
     slug = segs[-1] if segs else "unknown"
     return [
         ParsedSource(
-            site="CYBERFILE",
+            site=SourceSite.CYBERFILE.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"cyberfile_{slug}.bin"),
@@ -252,7 +388,7 @@ def parse_saint(url: str) -> list[ParsedSource]:
     slug = segs[-1] if segs else "unknown"
     return [
         ParsedSource(
-            site="SAINT",
+            site=SourceSite.SAINT.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"saint_{slug}.bin"),
@@ -266,7 +402,7 @@ def parse_coomer(url: str) -> list[ParsedSource]:
     slug = segs[-1] if segs else "unknown"
     return [
         ParsedSource(
-            site="COOMER",
+            site=SourceSite.COOMER.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"coomer_{slug}.bin"),
@@ -280,7 +416,7 @@ def parse_ytdl(url: str) -> list[ParsedSource]:
     slug = segs[-1] if segs else "video"
     return [
         ParsedSource(
-            site="YTDL",
+            site=SourceSite.YTDL.value,
             page_url=url,
             download_url=url,
             file_name=_safe_name(f"ytdl_{slug}.mp4"),
@@ -293,7 +429,7 @@ def parse_generic(url: str) -> list[ParsedSource]:
     name = _guess_filename_from_path(url, fallback="download.bin")
     return [
         ParsedSource(
-            site="GENERIC",
+            site=SourceSite.GENERIC.value,
             page_url=url,
             download_url=url,
             file_name=name,
@@ -306,8 +442,6 @@ def parse_generic(url: str) -> list[ParsedSource]:
 
 def parse_bunkr_album_live(url: str) -> list[ParsedSource]:
     try:
-        from urllib.request import Request, urlopen
-
         parsed = urlparse(url)
         album = _segments(url)[-1] if _segments(url) else "album"
         req = Request(url, headers={"User-Agent": "media-shuttle-core"})
@@ -318,7 +452,7 @@ def parse_bunkr_album_live(url: str) -> list[ParsedSource]:
             return []
         return [
             ParsedSource(
-                site="BUNKR",
+                site=SourceSite.BUNKR.value,
                 page_url=f"{parsed.scheme}://{parsed.netloc}{link}",
                 download_url=f"{parsed.scheme}://{parsed.netloc}{link}",
                 file_name=_safe_name(f"bunkr_{link.split('/')[-1]}.mp4"),
@@ -332,8 +466,6 @@ def parse_bunkr_album_live(url: str) -> list[ParsedSource]:
 
 def parse_cyberdrop_album_live(url: str) -> list[ParsedSource]:
     try:
-        from urllib.request import Request, urlopen
-
         parsed = urlparse(url)
         album = _segments(url)[-1] if _segments(url) else "album"
         req = Request(url, headers={"User-Agent": "media-shuttle-core"})
@@ -344,7 +476,7 @@ def parse_cyberdrop_album_live(url: str) -> list[ParsedSource]:
             return []
         return [
             ParsedSource(
-                site="CYBERDROP",
+                site=SourceSite.CYBERDROP.value,
                 page_url=f"{parsed.scheme}://{parsed.netloc}{link}",
                 download_url=f"{parsed.scheme}://{parsed.netloc}{link}",
                 file_name=_safe_name(f"cyberdrop_{link.split('/')[-1]}.bin"),
@@ -362,7 +494,9 @@ def builtin_parse_providers(mode: str) -> list[ParseProvider]:
     if mode == "live":
         providers.extend(
             [
+                ParseProvider("gofile_live", "live", is_gofile, parse_gofile_live),
                 ParseProvider("bunkr_album_live", "live", is_bunkr_album, parse_bunkr_album_live),
+                ParseProvider("bunkr_live", "live", is_bunkr, parse_bunkr_live),
                 ParseProvider("cyberdrop_album_live", "live", is_cyberdrop_album, parse_cyberdrop_album_live),
             ]
         )

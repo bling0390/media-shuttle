@@ -135,6 +135,16 @@ components:
           type: string
         destination:
           type: string
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskSource'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskArtifact'
+        last_error:
+          type: string
         created_at:
           type: string
           format: date-time
@@ -151,3 +161,42 @@ components:
         - destination
         - created_at
         - updated_at
+    TaskSource:
+      type: object
+      properties:
+        site:
+          type: string
+        page_url:
+          type: string
+        download_url:
+          type: string
+        file_name:
+          type: string
+        remote_folder:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+    TaskArtifact:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        reason:
+          type: string
+        site:
+          type: string
+        page_url:
+          type: string
+        declared_download_url:
+          type: string
+        actual_download_url:
+          type: string
+        file_name:
+          type: string
+        remote_folder:
+          type: string
+          nullable: true
+        location:
+          type: string

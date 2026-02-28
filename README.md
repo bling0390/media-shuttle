@@ -120,6 +120,7 @@ Examples:
   - `MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY`
 - Core runtime:
   - `MEDIA_SHUTTLE_IO_MODE=mock|live`
+  - `MEDIA_SHUTTLE_GOFILE_TOKEN` (optional; if set, reuse token instead of creating temporary account token)
   - `MEDIA_SHUTTLE_MAX_RETRIES`
   - `MEDIA_SHUTTLE_CORE_CONCURRENCY`
   - `MEDIA_SHUTTLE_CORE_POLL_SECONDS`

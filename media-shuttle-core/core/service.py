@@ -45,6 +45,7 @@ class CoreService:
             return self.pipeline.run(task_id)
         except Exception as exc:
             task = self.repository.update_status(task_id, TaskStatus.FAILED, str(exc))
+            self.repository.update_runtime_fields(task_id, last_error=str(exc))
             if task is None:
                 raise
             return task

@@ -92,6 +92,9 @@ class MongoTaskRepository(TaskRepository):
             "target": record.target,
             "destination": record.destination,
             "message": record.message,
+            "sources": list(record.sources),
+            "artifacts": list(record.artifacts),
+            "last_error": record.last_error,
             "created_at": record.created_at,
             "updated_at": record.updated_at,
         }
@@ -109,6 +112,9 @@ class MongoTaskRepository(TaskRepository):
             target=doc["target"],
             destination=doc["destination"],
             message=doc.get("message", ""),
+            sources=[item for item in doc.get("sources", []) if isinstance(item, dict)],
+            artifacts=[item for item in doc.get("artifacts", []) if isinstance(item, dict)],
+            last_error=doc.get("last_error", ""),
             created_at=doc["created_at"],
             updated_at=doc["updated_at"],
         )

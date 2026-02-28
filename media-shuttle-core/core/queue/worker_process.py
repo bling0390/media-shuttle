@@ -4,6 +4,8 @@ import os
 import subprocess
 import time
 
+from ..enums import default_site_queue_suffixes
+
 
 def _created_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_CREATED_QUEUE_KEY", "media_shuttle:task_created")
@@ -64,9 +66,10 @@ def generate_parse_queue_names() -> list[str]:
 
 
 def generate_download_queue_names() -> list[str]:
+    defaults = ",".join(default_site_queue_suffixes())
     sites = _csv_env(
         "MEDIA_SHUTTLE_SITE_QUEUE_SUFFIXES",
-        "GOFILE,BUNKR,CYBERDROP,CYBERFILE,PIXELDRAIN,GD,MEGA,MEDIAFIRE,SAINT,COOMER,YTDL,GENERIC",
+        defaults,
     )
     prefix = _download_queue_prefix()
     return [f"{prefix}@{site}" for site in sites]

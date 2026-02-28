@@ -51,6 +51,9 @@ class TaskRecord:
     payload: TaskPayload
     status: TaskStatus = TaskStatus.QUEUED
     message: str = ""
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    last_error: str = ""
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 

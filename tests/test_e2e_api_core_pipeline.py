@@ -47,6 +47,12 @@ class TestApiCoreE2E(unittest.TestCase):
         self.assertIsNotNone(task)
         self.assertEqual(task.status, "SUCCEEDED")
         self.assertTrue(task.message.startswith("rclone://"))
+        self.assertEqual(len(task.sources), 1)
+        self.assertIn("page_url", task.sources[0])
+        self.assertIn("download_url", task.sources[0])
+        self.assertEqual(len(task.artifacts), 1)
+        self.assertTrue(task.artifacts[0]["ok"])
+        self.assertIn("actual_download_url", task.artifacts[0])
 
 
 if __name__ == "__main__":

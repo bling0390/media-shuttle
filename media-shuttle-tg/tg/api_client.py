@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from urllib.request import Request, urlopen
+import httpx
 
 from .config import API_BASE_URL
 
@@ -11,14 +10,17 @@ class ApiClient:
         self.base_url = (base_url or API_BASE_URL).rstrip("/")
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
-        data = None
-        headers = {"Content-Type": "application/json"}
-        if body is not None:
-            data = json.dumps(body).encode("utf-8")
-        req = Request(url=f"{self.base_url}{path}", data=data, headers=headers, method=method)
-        with urlopen(req, timeout=20) as resp:
-            payload = resp.read().decode("utf-8")
-            return json.loads(payload) if payload else {}
+        response = httpx.request(
+            method=method,
+            url=f"{self.base_url}{path}",
+            json=body,
+            headers={"Content-Type": "application/json"},
+            timeout=20.0,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        payload = response.text
+        return response.json() if payload else {}
 
     def create_parse_task(self, url: str, requester_id: str, target: str, destination: str) -> dict:
         return self._request(

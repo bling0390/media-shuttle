@@ -129,6 +129,7 @@ Examples:
   - `MEDIA_SHUTTLE_UPLOAD_AFFINITY` (default `1`, route upload task back to downloader host queue)
   - `MEDIA_SHUTTLE_NODE_ID` (optional, stable node identity used by affinity routing; falls back to hostname)
   - `MEDIA_SHUTTLE_DOWNLOAD_DIR`
+  - `MEDIA_SHUTTLE_CLEANUP_ON_UPLOAD_SUCCESS` (default `1`, delete local download artifact after upload succeeds or download fails)
 - Provider dynamic loading:
   - `MEDIA_SHUTTLE_EXTRA_PROVIDER_MODULES`
   - `MEDIA_SHUTTLE_EXTRA_PROVIDER_CONFIG`

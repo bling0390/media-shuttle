@@ -9,6 +9,7 @@ from ..plugins.parsers import ParserRegistry, default_registry as default_parser
 from ..plugins.downloaders import DownloaderRegistry, default_registry as default_downloader_registry
 from ..plugins.uploaders import UploaderRegistry, default_registry as default_uploader_registry
 from ..storage.repository import TaskRepository
+from ..utils import cleanup_local_download
 
 
 @dataclass
@@ -52,6 +53,7 @@ class PipelineService:
 
             self.repository.update_status(task_id, TaskStatus.UPLOADING)
             upload = self.uploader_registry.upload(task.payload.target, download, task.payload.destination)
+            cleanup_local_download(download.local_path)
             uploads.append(upload.location)
             artifacts.append(
                 {

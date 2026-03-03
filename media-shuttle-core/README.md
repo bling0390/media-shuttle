@@ -41,6 +41,7 @@ export MEDIA_SHUTTLE_RETRY_QUEUE_KEY='media_shuttle:task_retry'
 export MEDIA_SHUTTLE_GOFILE_TOKEN='' # optional static gofile token for live mode
 export MEDIA_SHUTTLE_UPLOAD_AFFINITY=1 # route upload task to downloader host queue
 export MEDIA_SHUTTLE_NODE_ID='' # optional stable node id; defaults to hostname
+export MEDIA_SHUTTLE_CLEANUP_ON_UPLOAD_SUCCESS=1 # cleanup local downloaded files after upload success or download failure
 ```
 
 When running in `live` mode with `target=RCLONE`, the `rclone` CLI must be

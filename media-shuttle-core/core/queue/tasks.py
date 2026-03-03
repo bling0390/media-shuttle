@@ -10,6 +10,7 @@ from typing import Any
 from ..bootstrap import build_core_service
 from ..enums import SourceSite, TaskStatus
 from ..models import DownloadResult, ParsedSource
+from ..utils import cleanup_local_download
 from .celery_app import build_celery_app
 
 TASK_PARSE_CREATED = "core.queue.tasks.process_created_event"
@@ -275,6 +276,7 @@ def process_upload_result_logic(
     download = DownloadResult(**download_packet["download"])
     try:
         upload = service.pipeline.uploader_registry.upload(target, download, destination)
+        cleanup_local_download(download.local_path)
         return {
             "ok": True,
             "location": upload.location,

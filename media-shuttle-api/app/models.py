@@ -42,3 +42,22 @@ class TaskCreatedEvent:
     idempotency_key: str
     created_at: str
     payload: dict
+
+
+@dataclass
+class WorkerRecord:
+    hostname: str
+    role: str = ""
+    queue: str = ""
+    queues: list[str] = field(default_factory=list)
+    status: str = "UNKNOWN"
+    concurrency: int = 1
+    desired_concurrency: int = 1
+    node_id: str = ""
+    pid: int | None = None
+    exit_code: int | None = None
+    rate_limits: dict[str, str] = field(default_factory=dict)
+    last_error: str = ""
+    started_at: str = field(default_factory=utc_now_iso)
+    last_heartbeat_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)

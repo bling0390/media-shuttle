@@ -11,12 +11,22 @@ from ..bootstrap import build_core_service
 from ..enums import SourceSite, TaskStatus
 from ..models import DownloadResult, ParsedSource
 from ..utils import cleanup_local_download
+from ..storage.worker_registry import MongoWorkerRegistry
 from .celery_app import build_celery_app
+from .worker_control_runtime import apply_worker_control
+
+try:
+    from celery.signals import celeryd_after_setup, worker_ready, worker_shutdown
+except Exception:  # pragma: no cover - celery optional in local dev
+    celeryd_after_setup = None
+    worker_ready = None
+    worker_shutdown = None
 
 TASK_PARSE_CREATED = "core.queue.tasks.process_created_event"
 TASK_DOWNLOAD_SOURCE = "core.queue.tasks.process_download_source"
 TASK_UPLOAD_RESULT = "core.queue.tasks.process_upload_result"
 TASK_FINALIZE = "core.queue.tasks.process_finalize_task"
+TASK_WORKER_CONTROL = "core.queue.tasks.apply_worker_control"
 
 
 def _utc_now_iso() -> str:
@@ -33,6 +43,17 @@ def _retry_queue_key() -> str:
 
 def _download_queue_prefix() -> str:
     return os.getenv("MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY", "media_shuttle:task_download")
+
+
+def _worker_control_queue_prefix() -> str:
+    return os.getenv("MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY", "media_shuttle:worker_control")
+
+
+def _worker_control_queue_for_node(node_id: str | None = None) -> str:
+    node = _normalize_owner_node(node_id) if node_id is not None else _resolve_owner_node()
+    if node:
+        return f"{_worker_control_queue_prefix()}@{node}"
+    return _worker_control_queue_prefix()
 
 
 def _download_queue_for_site(site: str) -> str:
@@ -56,6 +77,72 @@ def _resolve_owner_node() -> str:
 
 def _max_retries() -> int:
     return int(os.getenv("MEDIA_SHUTTLE_MAX_RETRIES", "2"))
+
+
+def _worker_registry_enabled() -> bool:
+    backend = os.getenv("MEDIA_SHUTTLE_STORAGE_BACKEND", "memory").strip().lower()
+    enabled = os.getenv("MEDIA_SHUTTLE_WORKER_REGISTRY_ENABLED", "1").strip().lower()
+    return backend == "mongo" and enabled not in {"", "0", "false", "off", "no"}
+
+
+_WORKER_REGISTRY = None
+
+
+def _worker_registry():
+    global _WORKER_REGISTRY
+    if _WORKER_REGISTRY is not None:
+        return _WORKER_REGISTRY
+    if not _worker_registry_enabled():
+        _WORKER_REGISTRY = False
+        return None
+    try:
+        _WORKER_REGISTRY = MongoWorkerRegistry(
+            mongo_uri=os.getenv("MEDIA_SHUTTLE_MONGO_URI", "mongodb://localhost:27017"),
+            db_name=os.getenv("MEDIA_SHUTTLE_MONGO_DB", "media_shuttle"),
+            collection_name=os.getenv("MEDIA_SHUTTLE_MONGO_WORKER_COLLECTION", "workers"),
+        )
+        return _WORKER_REGISTRY
+    except Exception:
+        _WORKER_REGISTRY = False
+        return None
+
+
+def _role_from_hostname(hostname: str) -> str:
+    value = (hostname or "").strip().lower()
+    match = re.search(r"core-worker-([a-z]+)", value)
+    if not match:
+        return ""
+    return match.group(1)
+
+
+def _queue_names_from_worker_instance(instance) -> list[str]:
+    queues: list[str] = []
+    try:
+        queue_map = instance.app.amqp.queues
+        if hasattr(queue_map, "keys"):
+            for key in queue_map.keys():
+                if isinstance(key, str):
+                    queues.append(key)
+    except Exception:
+        return []
+    return list(dict.fromkeys(queues))
+
+
+def _touch_worker_registry(*, hostname: str, status: str, role: str, queues: list[str], concurrency: int) -> None:
+    registry = _worker_registry()
+    if registry is None:
+        return
+    try:
+        registry.upsert_worker(
+            hostname=hostname,
+            role=role,
+            queues=queues,
+            concurrency=max(1, int(concurrency)),
+            status=status,
+            node_id=_resolve_owner_node(),
+        )
+    except Exception:
+        return
 
 
 def _source_snapshot(source: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +410,54 @@ celery_app = build_celery_app()
 
 if celery_app is not None:
 
+    if celeryd_after_setup is not None:
+
+        @celeryd_after_setup.connect
+        def _on_worker_setup(sender: str, instance, **_kwargs):
+            hostname = str(sender or "")
+            role = _role_from_hostname(hostname)
+            queues = _queue_names_from_worker_instance(instance)
+            concurrency = int(getattr(instance, "concurrency", 1) or 1)
+            _touch_worker_registry(
+                hostname=hostname,
+                status="STARTING",
+                role=role,
+                queues=queues,
+                concurrency=concurrency,
+            )
+
+    if worker_ready is not None:
+
+        @worker_ready.connect
+        def _on_worker_ready(sender=None, **_kwargs):
+            hostname = str(getattr(sender, "hostname", "") or "")
+            role = _role_from_hostname(hostname)
+            queues = _queue_names_from_worker_instance(sender)
+            concurrency = int(getattr(sender, "concurrency", 1) or 1)
+            _touch_worker_registry(
+                hostname=hostname,
+                status="READY",
+                role=role,
+                queues=queues,
+                concurrency=concurrency,
+            )
+
+    if worker_shutdown is not None:
+
+        @worker_shutdown.connect
+        def _on_worker_shutdown(sender=None, **_kwargs):
+            hostname = str(getattr(sender, "hostname", "") or "")
+            role = _role_from_hostname(hostname)
+            queues = _queue_names_from_worker_instance(sender)
+            concurrency = int(getattr(sender, "concurrency", 1) or 1)
+            _touch_worker_registry(
+                hostname=hostname,
+                status="SHUTDOWN",
+                role=role,
+                queues=queues,
+                concurrency=concurrency,
+            )
+
     @celery_app.task(name=TASK_PARSE_CREATED)
     def process_created_event(event: dict[str, Any]) -> dict[str, Any]:
         return process_created_event_logic(event=event, app=celery_app)
@@ -347,6 +482,10 @@ if celery_app is not None:
     def process_finalize_task(upload_results: list[dict[str, Any]], event: dict[str, Any], task_id: str) -> dict[str, Any]:
         return process_finalize_task_logic(upload_results=upload_results, event=event, task_id=task_id, app=celery_app)
 
+    @celery_app.task(name=TASK_WORKER_CONTROL)
+    def apply_worker_control_task(command: dict[str, Any]) -> dict[str, Any]:
+        return apply_worker_control(command or {})
+
 else:
 
     def process_created_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -360,3 +499,6 @@ else:
 
     def process_finalize_task(upload_results: list[dict[str, Any]], event: dict[str, Any], task_id: str) -> dict[str, Any]:
         raise RuntimeError("celery is required for process_finalize_task task")
+
+    def apply_worker_control_task(command: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("celery is required for apply_worker_control_task")

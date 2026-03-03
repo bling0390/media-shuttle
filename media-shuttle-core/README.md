@@ -42,6 +42,8 @@ export MEDIA_SHUTTLE_GOFILE_TOKEN='' # optional static gofile token for live mod
 export MEDIA_SHUTTLE_UPLOAD_AFFINITY=1 # route upload task to downloader host queue
 export MEDIA_SHUTTLE_NODE_ID='' # optional stable node id; defaults to hostname
 export MEDIA_SHUTTLE_CLEANUP_ON_UPLOAD_SUCCESS=1 # cleanup local downloaded files after upload success or download failure
+export MEDIA_SHUTTLE_WORKER_REGISTRY_ENABLED=1 # persist worker lifecycle to Mongo workers collection
+export MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY='media_shuttle:worker_control'
 ```
 
 When running in `live` mode with `target=RCLONE`, the `rclone` CLI must be
@@ -67,8 +69,15 @@ cd media-shuttle-core
 python3 -c "from core.queue.worker_process import run_forever; raise SystemExit(run_forever())"
 ```
 
-Default `MEDIA_SHUTTLE_CORE_WORKER_ROLE=all` starts three child workers in one
-main process: `parse`, `download`, `upload`.
+Default `MEDIA_SHUTTLE_CORE_WORKER_ROLE=all` starts four child workers in one
+main process: `parse`, `download`, `upload`, `control`.
+
+To run control worker only (accept start/stop/restart commands for this node):
+
+```bash
+MEDIA_SHUTTLE_CORE_WORKER_ROLE=control \
+python3 -c "from core.queue.worker_process import run_forever; raise SystemExit(run_forever())"
+```
 
 Equivalent direct celery command:
 

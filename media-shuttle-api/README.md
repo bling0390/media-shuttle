@@ -35,9 +35,12 @@ Optional vars (not required):
 ```bash
 export MEDIA_SHUTTLE_MONGO_DB='media_shuttle'
 export MEDIA_SHUTTLE_MONGO_TASK_COLLECTION='tasks'
+export MEDIA_SHUTTLE_MONGO_WORKER_COLLECTION='workers'
 export MEDIA_SHUTTLE_CREATED_QUEUE_KEY='media_shuttle:task_created'
 export MEDIA_SHUTTLE_REDIS_PUBLISH_MODE='celery'   # celery | redis_list
 export MEDIA_SHUTTLE_CORE_CREATED_TASK_NAME='core.queue.tasks.process_created_event'
+export MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY='media_shuttle:worker_control'
+export MEDIA_SHUTTLE_CORE_WORKER_CONTROL_TASK_NAME='core.queue.tasks.apply_worker_control'
 ```
 
 ## 3. Run standalone

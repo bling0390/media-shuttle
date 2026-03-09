@@ -27,7 +27,9 @@ from .parsers_sites import (
     parse_gofile,
     parse_gofile_live,
     parse_mediafire,
+    parse_mediafire_live,
     parse_mega,
+    parse_mega_live,
     parse_pixeldrain,
     parse_pixeldrain_live,
     parse_saint,
@@ -46,7 +48,9 @@ def builtin_parse_providers(mode: str) -> list[ParseProvider]:
                 ParseProvider("bunkr_album_live", "live", is_bunkr_album, parse_bunkr_album_live),
                 ParseProvider("bunkr_live", "live", is_bunkr, parse_bunkr_live),
                 ParseProvider("cyberdrop_album_live", "live", is_cyberdrop_album, parse_cyberdrop_album_live),
+                ParseProvider("mega_live", "live", is_mega, parse_mega_live),
                 ParseProvider("pixeldrain_live", "live", is_pixeldrain, parse_pixeldrain_live),
+                ParseProvider("mediafire_live", "live", is_mediafire, parse_mediafire_live),
             ]
         )
 

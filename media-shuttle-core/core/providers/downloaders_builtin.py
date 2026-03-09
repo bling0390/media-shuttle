@@ -10,6 +10,7 @@ from .downloaders_sites import (
     download_gofile_live,
     download_live_generic,
     download_mediafire_live,
+    download_mega_live,
     download_mock,
     download_pixeldrain_live,
     download_saint_live,
@@ -63,9 +64,7 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
                 DownloadProvider(
                     "coomer_live", "live", lambda source: source.site == SourceSite.COOMER.value, download_coomer_live
                 ),
-                DownloadProvider(
-                    "mega_live", "live", lambda source: source.site == SourceSite.MEGA.value, download_unsupported_live
-                ),
+                DownloadProvider("mega_live", "live", lambda source: source.site == SourceSite.MEGA.value, download_mega_live),
                 DownloadProvider(
                     "ytdl_live", "live", lambda source: source.site == SourceSite.YTDL.value, download_unsupported_live
                 ),

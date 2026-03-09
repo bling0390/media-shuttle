@@ -15,6 +15,7 @@ from .cyberfile import download_cyberfile_live
 from .gd import download_gd_live
 from .gofile import download_gofile_live
 from .mediafire import download_mediafire_live
+from .mega import download_mega_live
 from .pixeldrain import download_pixeldrain_live
 from .saint import download_saint_live
 from .unsupported import download_unsupported_live
@@ -33,6 +34,7 @@ __all__ = [
     "download_cyberdrop_live",
     "download_cyberfile_live",
     "download_mediafire_live",
+    "download_mega_live",
     "download_pixeldrain_live",
     "download_gd_live",
     "download_saint_live",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from urllib.parse import urlencode, urlparse
@@ -11,6 +12,8 @@ from .common import host, http_json, safe_name, segments
 
 _GOFILE_TOKEN: str = ""
 _GOFILE_TOKEN_EXPIRES_AT: int = 0
+_GOFILE_WT_SALT = "gf2026x"
+_GOFILE_DEFAULT_LANGUAGE = os.getenv("MEDIA_SHUTTLE_GOFILE_LANGUAGE", "en-US").strip() or "en-US"
 
 
 def is_gofile(url: str) -> bool:
@@ -69,7 +72,6 @@ def _gofile_get_token() -> str:
         "https://api.gofile.io/accounts",
         headers=with_random_user_agent(
             {
-                "Accept-Encoding": "gzip, deflate, br",
                 "Accept": "*/*",
                 "Connection": "keep-alive",
             }
@@ -86,20 +88,25 @@ def _gofile_get_token() -> str:
 
 
 def _gofile_list_sources(content_id: str, token: str, password: str | None = None) -> list[ParsedSource]:
-    params = {"wt": "4fd6sg89d7s6", "cache": "true"}
+    request_headers = with_random_user_agent(
+        {
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Authorization": f"Bearer {token}",
+        }
+    )
+    user_agent = request_headers["User-Agent"]
+    language = _GOFILE_DEFAULT_LANGUAGE
+    request_headers["X-Website-Token"] = _gofile_build_website_token(token, user_agent, language)
+    request_headers["X-BL"] = language
+
+    params = {"cache": "true"}
     if password:
         params["password"] = password
 
     resp = http_json(
         f"https://api.gofile.io/contents/{content_id}?{urlencode(params)}",
-        headers=with_random_user_agent(
-            {
-                "Accept-Encoding": "gzip, deflate, br",
-                "Accept": "*/*",
-                "Connection": "keep-alive",
-                "Authorization": f"Bearer {token}",
-            }
-        ),
+        headers=request_headers,
         method="GET",
     )
     if resp.get("status") != "ok":
@@ -149,3 +156,10 @@ def _gofile_list_sources(content_id: str, token: str, password: str | None = Non
             )
         )
     return items
+
+
+def _gofile_build_website_token(token: str, user_agent: str, language: str, now: int | None = None) -> str:
+    unix_time = int(time.time() if now is None else now)
+    time_bucket = unix_time // (4 * 60 * 60)
+    payload = f"{user_agent}::{language}::{token}::{time_bucket}::{_GOFILE_WT_SALT}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

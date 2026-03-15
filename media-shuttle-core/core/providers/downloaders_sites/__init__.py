@@ -12,12 +12,15 @@ from .common import (
 from .coomer import download_coomer_live
 from .cyberdrop import download_cyberdrop_live
 from .cyberfile import download_cyberfile_live
+from .filester import download_filester_live
 from .gd import download_gd_live
 from .gofile import download_gofile_live
 from .mediafire import download_mediafire_live
 from .mega import download_mega_live
 from .pixeldrain import download_pixeldrain_live
 from .saint import download_saint_live
+from .transfer import download_transfer_live
+from .turbo import download_turbo_live
 from .unsupported import download_unsupported_live
 
 __all__ = [
@@ -33,11 +36,14 @@ __all__ = [
     "download_bunkr_live",
     "download_cyberdrop_live",
     "download_cyberfile_live",
+    "download_filester_live",
     "download_mediafire_live",
     "download_mega_live",
     "download_pixeldrain_live",
     "download_gd_live",
     "download_saint_live",
+    "download_transfer_live",
+    "download_turbo_live",
     "download_coomer_live",
     "download_unsupported_live",
 ]

@@ -6,6 +6,7 @@ from .downloaders_sites import (
     download_coomer_live,
     download_cyberdrop_live,
     download_cyberfile_live,
+    download_filester_live,
     download_gd_live,
     download_gofile_live,
     download_live_generic,
@@ -14,6 +15,8 @@ from .downloaders_sites import (
     download_mock,
     download_pixeldrain_live,
     download_saint_live,
+    download_transfer_live,
+    download_turbo_live,
     download_unsupported_live,
     http_download as _http_download,
     write_mock_file as _write_mock_file,
@@ -46,6 +49,12 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
                     download_cyberfile_live,
                 ),
                 DownloadProvider(
+                    "filester_live",
+                    "live",
+                    lambda source: source.site == SourceSite.FILESTER.value,
+                    download_filester_live,
+                ),
+                DownloadProvider(
                     "pixeldrain_live",
                     "live",
                     lambda source: source.site == SourceSite.PIXELDRAIN.value,
@@ -60,6 +69,18 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
                 ),
                 DownloadProvider(
                     "saint_live", "live", lambda source: source.site == SourceSite.SAINT.value, download_saint_live
+                ),
+                DownloadProvider(
+                    "transfer_live",
+                    "live",
+                    lambda source: source.site == SourceSite.TRANSFERIT.value,
+                    download_transfer_live,
+                ),
+                DownloadProvider(
+                    "turbo_live",
+                    "live",
+                    lambda source: source.site == SourceSite.TURBO.value,
+                    download_turbo_live,
                 ),
                 DownloadProvider(
                     "coomer_live", "live", lambda source: source.site == SourceSite.COOMER.value, download_coomer_live
@@ -82,11 +103,18 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
                 "cyberfile_mock", "mock", lambda source: source.site == SourceSite.CYBERFILE.value, download_mock
             ),
             DownloadProvider(
+                "filester_mock", "mock", lambda source: source.site == SourceSite.FILESTER.value, download_mock
+            ),
+            DownloadProvider(
                 "pixeldrain_mock", "mock", lambda source: source.site == SourceSite.PIXELDRAIN.value, download_mock
             ),
             DownloadProvider("gd_mock", "mock", lambda source: source.site == SourceSite.GD.value, download_mock),
             DownloadProvider("mega_mock", "mock", lambda source: source.site == SourceSite.MEGA.value, download_mock),
             DownloadProvider("saint_mock", "mock", lambda source: source.site == SourceSite.SAINT.value, download_mock),
+            DownloadProvider(
+                "transfer_mock", "mock", lambda source: source.site == SourceSite.TRANSFERIT.value, download_mock
+            ),
+            DownloadProvider("turbo_mock", "mock", lambda source: source.site == SourceSite.TURBO.value, download_mock),
             DownloadProvider("coomer_mock", "mock", lambda source: source.site == SourceSite.COOMER.value, download_mock),
             DownloadProvider(
                 "mediafire_mock", "mock", lambda source: source.site == SourceSite.MEDIAFIRE.value, download_mock

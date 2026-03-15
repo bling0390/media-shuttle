@@ -170,15 +170,179 @@ class TestCoreSitePlugins(unittest.TestCase):
         self.assertEqual(source.file_name, "Hungarian_1st.mp4")
         mocked_download.assert_called_once()
 
+    def test_transfer_parser_should_identify_site(self):
+        registry = default_parser_registry()
+        page_url = "https://transfer.it/t/tWvdyDpHkRCZ"
+        sources = registry.parse(page_url)
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].site, "TRANSFERIT")
+        self.assertEqual(sources[0].download_url, page_url)
+        self.assertEqual(sources[0].file_name, "transfer_tWvdyDpHkRCZ.bin")
+        self.assertEqual(sources[0].remote_folder, "tWvdyDpHkRCZ")
+
+    def test_transfer_live_downloader_should_refresh_direct_url(self):
+        downloader = default_downloader_registry(mode="live")
+        page_url = "https://transfer.it/t/tWvdyDpHkRCZ"
+        direct_url = "https://gfs270n389.userstorage.mega.co.nz/dl/example-token"
+        source = ParsedSource(
+            site="TRANSFERIT",
+            page_url=page_url,
+            download_url=page_url,
+            file_name="832416793426411520.mp4",
+            remote_folder="tWvdyDpHkRCZ",
+            metadata={"share_id": "tWvdyDpHkRCZ", "node_handle": "KKw1zT5Z"},
+        )
+        refreshed = ParsedSource(
+            site="TRANSFERIT",
+            page_url=page_url,
+            download_url=direct_url,
+            file_name="832416793426411520.mp4",
+            remote_folder="tWvdyDpHkRCZ",
+            metadata={"share_id": "tWvdyDpHkRCZ", "node_handle": "KKw1zT5Z", "resolved_live": True},
+        )
+        result = DownloadResult(
+            site="TRANSFERIT",
+            source_url=direct_url,
+            local_path="/tmp/media-shuttle/tmp.part",
+            size_bytes=2001281384,
+            file_name="832416793426411520.mp4",
+            remote_folder="tWvdyDpHkRCZ",
+        )
+
+        with patch("core.providers.downloaders_sites.transfer.resolve_transfer_source", return_value=refreshed), patch(
+            "core.providers.downloaders_sites.transfer.download_live_generic", return_value=result
+        ) as mocked_download:
+            download = downloader.download(source)
+
+        self.assertEqual(download.source_url, direct_url)
+        self.assertEqual(download.file_name, "832416793426411520.mp4")
+        self.assertEqual(source.download_url, direct_url)
+        self.assertEqual(source.file_name, "832416793426411520.mp4")
+        mocked_download.assert_called_once()
+
+    def test_filester_parser_should_identify_site(self):
+        registry = default_parser_registry()
+        page_url = "https://filester.me/d/QHdR2xo"
+        sources = registry.parse(page_url)
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].site, "FILESTER")
+        self.assertEqual(sources[0].download_url, page_url)
+        self.assertEqual(sources[0].file_name, "filester_QHdR2xo.bin")
+        self.assertEqual(sources[0].remote_folder, "QHdR2xo")
+
+    def test_filester_live_downloader_should_refresh_direct_url(self):
+        downloader = default_downloader_registry(mode="live")
+        page_url = "https://filester.me/d/QHdR2xo"
+        direct_url = (
+            "https://cache1.filester.me/d/"
+            "36633065323137652d336439352d346163662d386433332d363463366239386638376565"
+            "?download=true"
+        )
+        source = ParsedSource(
+            site="FILESTER",
+            page_url=page_url,
+            download_url=page_url,
+            file_name="832416793426411520.mp4",
+            remote_folder="6c0e217e-3d95-4acf-8d33-64c6b98f87ee",
+            metadata={"file_slug": "QHdR2xo", "file_uuid": "6c0e217e-3d95-4acf-8d33-64c6b98f87ee"},
+        )
+        refreshed = ParsedSource(
+            site="FILESTER",
+            page_url=page_url,
+            download_url=direct_url,
+            file_name="832416793426411520.mp4",
+            remote_folder="6c0e217e-3d95-4acf-8d33-64c6b98f87ee",
+            metadata={
+                "file_slug": "QHdR2xo",
+                "file_uuid": "6c0e217e-3d95-4acf-8d33-64c6b98f87ee",
+                "resolved_live": True,
+            },
+        )
+        result = DownloadResult(
+            site="FILESTER",
+            source_url=direct_url,
+            local_path="/tmp/media-shuttle/tmp.part",
+            size_bytes=2001281384,
+            file_name="832416793426411520.mp4",
+            remote_folder="6c0e217e-3d95-4acf-8d33-64c6b98f87ee",
+        )
+
+        with patch("core.providers.downloaders_sites.filester.resolve_filester_source", return_value=refreshed), patch(
+            "core.providers.downloaders_sites.filester.download_live_generic", return_value=result
+        ) as mocked_download:
+            download = downloader.download(source)
+
+        self.assertEqual(download.source_url, direct_url)
+        self.assertEqual(download.file_name, "832416793426411520.mp4")
+        self.assertEqual(source.download_url, direct_url)
+        self.assertEqual(source.file_name, "832416793426411520.mp4")
+        mocked_download.assert_called_once()
+
+    def test_turbo_parser_should_identify_site(self):
+        registry = default_parser_registry()
+        page_url = "https://turbo.cr/v/gLlVkUMFwaO"
+        sources = registry.parse(page_url)
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].site, "TURBO")
+        self.assertEqual(sources[0].download_url, page_url)
+        self.assertEqual(sources[0].file_name, "turbo_gLlVkUMFwaO.bin")
+        self.assertEqual(sources[0].remote_folder, "gLlVkUMFwaO")
+
+    def test_turbo_live_downloader_should_refresh_direct_url(self):
+        downloader = default_downloader_registry(mode="live")
+        page_url = "https://turbo.cr/v/gLlVkUMFwaO"
+        direct_url = (
+            "https://dl5.turbocdn.st/data/gLlVkUMFwaO.mp4"
+            "?exp=1773592839&token=abc123&fn=gLlVkUMFwaO.mp4"
+        )
+        source = ParsedSource(
+            site="TURBO",
+            page_url=page_url,
+            download_url=page_url,
+            file_name="gLlVkUMFwaO.mp4",
+            remote_folder="gLlVkUMFwaO",
+            metadata={"slug": "gLlVkUMFwaO"},
+        )
+        refreshed = ParsedSource(
+            site="TURBO",
+            page_url=page_url,
+            download_url=direct_url,
+            file_name="gLlVkUMFwaO.mp4",
+            remote_folder="gLlVkUMFwaO",
+            metadata={"slug": "gLlVkUMFwaO", "resolved_live": True},
+        )
+        result = DownloadResult(
+            site="TURBO",
+            source_url=direct_url,
+            local_path="/tmp/media-shuttle/tmp.part",
+            size_bytes=176454656,
+            file_name="gLlVkUMFwaO.mp4",
+            remote_folder="gLlVkUMFwaO",
+        )
+
+        with patch("core.providers.downloaders_sites.turbo.resolve_turbo_source", return_value=refreshed), patch(
+            "core.providers.downloaders_sites.turbo.download_live_generic", return_value=result
+        ) as mocked_download:
+            download = downloader.download(source)
+
+        self.assertEqual(download.source_url, direct_url)
+        self.assertEqual(download.file_name, "gLlVkUMFwaO.mp4")
+        self.assertEqual(source.download_url, direct_url)
+        self.assertEqual(source.file_name, "gLlVkUMFwaO.mp4")
+        mocked_download.assert_called_once()
+
     def test_additional_site_parsers_should_identify_site(self):
         registry = default_parser_registry()
         cases = [
             ("https://cyberdrop.me/f/abc123", "CYBERDROP"),
             ("https://cyberfile.me/abc123", "CYBERFILE"),
+            ("https://filester.me/d/QHdR2xo", "FILESTER"),
+            ("https://turbo.cr/v/gLlVkUMFwaO", "TURBO"),
             ("https://pixeldrain.com/u/xyz987", "PIXELDRAIN"),
             ("https://drive.google.com/file/d/1abcDEF123456789/view", "GD"),
             ("https://mega.nz/file/abc#key", "MEGA"),
             ("https://saint.to/embed/abc123", "SAINT"),
+            ("https://transfer.it/t/tWvdyDpHkRCZ", "TRANSFERIT"),
             ("https://coomer.su/post/123456", "COOMER"),
         ]
         for url, expected in cases:
@@ -207,10 +371,13 @@ class TestCoreSitePlugins(unittest.TestCase):
         urls = [
             "https://cyberdrop.me/f/abc123",
             "https://cyberfile.me/abc123",
+            "https://filester.me/d/QHdR2xo",
+            "https://turbo.cr/v/gLlVkUMFwaO",
             "https://pixeldrain.com/u/xyz987",
             "https://drive.google.com/file/d/1abcDEF123456789/view",
             "https://mega.nz/file/abc#key",
             "https://saint.to/embed/abc123",
+            "https://transfer.it/t/tWvdyDpHkRCZ",
             "https://coomer.su/post/123456",
         ]
         for url in urls:

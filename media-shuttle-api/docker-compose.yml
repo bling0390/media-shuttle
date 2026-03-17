@@ -1,0 +1,42 @@
+services:
+  api:
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${MEDIA_SHUTTLE_API_PORT:-8000}:8000"
+    environment:
+      MEDIA_SHUTTLE_STORAGE_BACKEND: ${MEDIA_SHUTTLE_STORAGE_BACKEND:-mongo}
+      MEDIA_SHUTTLE_QUEUE_BACKEND: ${MEDIA_SHUTTLE_QUEUE_BACKEND:-redis}
+      MEDIA_SHUTTLE_MONGO_URI: ${MEDIA_SHUTTLE_MONGO_URI}
+      MEDIA_SHUTTLE_MONGO_DB: ${MEDIA_SHUTTLE_MONGO_DB:-media_shuttle}
+      MEDIA_SHUTTLE_MONGO_TASK_COLLECTION: ${MEDIA_SHUTTLE_MONGO_TASK_COLLECTION:-tasks}
+      MEDIA_SHUTTLE_MONGO_WORKER_COLLECTION: ${MEDIA_SHUTTLE_MONGO_WORKER_COLLECTION:-workers}
+      MEDIA_SHUTTLE_REDIS_URL: ${MEDIA_SHUTTLE_REDIS_URL}
+      MEDIA_SHUTTLE_CREATED_QUEUE_KEY: ${MEDIA_SHUTTLE_CREATED_QUEUE_KEY:-media_shuttle:task_created}
+      MEDIA_SHUTTLE_REDIS_PUBLISH_MODE: ${MEDIA_SHUTTLE_REDIS_PUBLISH_MODE:-celery}
+      MEDIA_SHUTTLE_CORE_CREATED_TASK_NAME: ${MEDIA_SHUTTLE_CORE_CREATED_TASK_NAME:-core.queue.tasks.process_created_event}
+      MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY: ${MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY:-media_shuttle:worker_control}
+      MEDIA_SHUTTLE_CORE_WORKER_CONTROL_TASK_NAME: ${MEDIA_SHUTTLE_CORE_WORKER_CONTROL_TASK_NAME:-core.queue.tasks.apply_worker_control}
+      MEDIA_SHUTTLE_API_LOG_DIR: /var/log/media-shuttle-api
+      MEDIA_SHUTTLE_API_LOG_LEVEL: ${MEDIA_SHUTTLE_API_LOG_LEVEL:-INFO}
+      MEDIA_SHUTTLE_API_LOG_ROTATION: ${MEDIA_SHUTTLE_API_LOG_ROTATION:-100 MB}
+      MEDIA_SHUTTLE_API_LOG_RETENTION: ${MEDIA_SHUTTLE_API_LOG_RETENTION:-7 days}
+    volumes:
+      - api-logs:/var/log/media-shuttle-api
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/stats/queue', timeout=5).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  api-logs:

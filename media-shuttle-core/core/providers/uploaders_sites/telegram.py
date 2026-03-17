@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import unquote, urlparse
 
+from ...logging import setup_logging
 from ...models import DownloadResult, UploadResult
 from .common import build_remote_name
 
@@ -28,6 +29,7 @@ _CLIENT_INVALIDATION_ERROR_NAMES = {
     "TimeoutError",
     "TransportError",
 }
+logger = setup_logging()
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,7 @@ def _close_telegram_client() -> None:
         client.stop()
     except Exception:
         pass
+    logger.info("telegram client closed")
 
 
 def _get_telegram_client():
@@ -145,6 +148,7 @@ def _get_telegram_client():
         client = _build_telegram_client()
         client.start()
         _TELEGRAM_CLIENT = client
+        logger.info("telegram client started")
         return client
 
 
@@ -185,7 +189,10 @@ def upload_telegram_live(download: DownloadResult, destination: str) -> UploadRe
         )
     except Exception as exc:
         if _should_invalidate_telegram_client(exc):
+            logger.warning(f"telegram upload invalidated client reason={exc}")
             _close_telegram_client()
+        else:
+            logger.warning(f"telegram upload failed without client invalidation reason={exc}")
         raise
 
     message_id = getattr(message, "id", None) or getattr(message, "message_id", None)

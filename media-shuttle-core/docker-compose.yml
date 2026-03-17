@@ -26,6 +26,9 @@ services:
       MEDIA_SHUTTLE_TG_BOT_TOKEN: ${MEDIA_SHUTTLE_TG_BOT_TOKEN:-}
       MEDIA_SHUTTLE_TG_SESSION_NAME: ${MEDIA_SHUTTLE_TG_SESSION_NAME:-media-shuttle-core-uploader}
       MEDIA_SHUTTLE_TG_WORKDIR: /tmp/media-shuttle-tg
+      MEDIA_SHUTTLE_CORE_LOG_DIR: /var/log/media-shuttle-core
+      MEDIA_SHUTTLE_CORE_LOG_LEVEL: ${MEDIA_SHUTTLE_CORE_LOG_LEVEL:-INFO}
+      MEDIA_SHUTTLE_CORE_LOG_RETENTION: ${MEDIA_SHUTTLE_CORE_LOG_RETENTION:-14 days}
       MEDIA_SHUTTLE_UPLOAD_AFFINITY: ${MEDIA_SHUTTLE_UPLOAD_AFFINITY:-1}
       MEDIA_SHUTTLE_NODE_ID: ${MEDIA_SHUTTLE_NODE_ID:-}
       MEDIA_SHUTTLE_MAX_RETRIES: ${MEDIA_SHUTTLE_MAX_RETRIES:-2}
@@ -38,9 +41,11 @@ services:
       MEDIA_SHUTTLE_EXTRA_PROVIDER_CONFIG: ${MEDIA_SHUTTLE_EXTRA_PROVIDER_CONFIG:-}
     volumes:
       - core-downloads:/var/lib/media-shuttle/downloads
+      - core-logs:/var/log/media-shuttle-core
       - ./rclone:/root/.config/rclone:ro
       - tg-sessions:/tmp/media-shuttle-tg
 
 volumes:
   core-downloads:
+  core-logs:
   tg-sessions:

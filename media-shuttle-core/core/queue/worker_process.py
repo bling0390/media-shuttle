@@ -9,7 +9,10 @@ import time
 from typing import Any
 
 from ..enums import default_site_queue_suffixes
+from ..logging import setup_logging
 from ..storage.worker_registry import MongoWorkerRegistry, WorkerRegistry
+
+logger = setup_logging()
 
 
 def _created_queue_key() -> str:
@@ -240,6 +243,10 @@ def start_celery_process(
     hostname = hostname_override or _worker_hostname(role)
     queues = queues_override or _worker_queues(role)
 
+    logger.info(
+        f"starting celery worker role={role} hostname={hostname} concurrency={concurrency} queues={queues}"
+    )
+
     return subprocess.Popen(
         [
             "celery",
@@ -265,6 +272,8 @@ def _resolve_roles() -> list[str]:
 
 def _terminate_workers(procs: list[subprocess.Popen]) -> None:
     running = [proc for proc in procs if proc.poll() is None]
+    if running:
+        logger.info(f"terminating worker subprocesses count={len(running)}")
     for proc in running:
         proc.terminate()
 
@@ -275,6 +284,7 @@ def _terminate_workers(procs: list[subprocess.Popen]) -> None:
             time.sleep(0.1)
 
     for proc in running:
+        logger.warning(f"killing unresponsive worker pid={getattr(proc, 'pid', None)}")
         proc.kill()
 
 
@@ -307,6 +317,7 @@ def run_forever() -> int:
     previous_signal_handlers = _install_signal_handlers(_on_signal)
     roles = _resolve_roles()
     registry = _build_worker_registry()
+    logger.info(f"core supervisor boot roles={','.join(roles)}")
     slots = [_worker_slot(role) for role in roles]
     procs: list[subprocess.Popen] = []
     for slot in slots:
@@ -314,6 +325,9 @@ def run_forever() -> int:
         proc = start_celery_process(str(slot["role"]))
         slot["proc"] = proc
         procs.append(proc)
+        logger.info(
+            f"worker subprocess started role={slot['role']} pid={getattr(proc, 'pid', None)} hostname={slot['hostname']}"
+        )
         _upsert_worker(slot, registry, status="READY")
     try:
         exited_proc, code = _wait_for_any_exit(
@@ -324,6 +338,9 @@ def run_forever() -> int:
             if slot["proc"] is exited_proc:
                 status = "SHUTDOWN" if code == 0 else "CRASHED"
                 reason = "" if code == 0 else f"exit_code={code}"
+                logger.warning(
+                    f"worker subprocess exited role={slot['role']} pid={getattr(exited_proc, 'pid', None)} status={status} reason={reason or 'normal_exit'}"
+                )
                 _upsert_worker(slot, registry, status=status, reason=reason)
                 break
         return code
@@ -331,6 +348,7 @@ def run_forever() -> int:
         shutdown_requested = True
         signum = caught_signal[-1] if caught_signal else None
         reason = _signal_reason(signum)
+        logger.info(f"core supervisor received shutdown signal reason={reason}")
         for slot in slots:
             _upsert_worker(slot, registry, status="SHUTDOWN", reason=reason)
         if signum is None:
@@ -352,4 +370,5 @@ def run_forever() -> int:
                 status = "SHUTDOWN" if code == 0 else "CRASHED"
                 reason = "" if code == 0 else f"exit_code={code}"
                 _upsert_worker(slot, registry, status=status, reason=reason)
+        logger.info("core supervisor stopped")
         _restore_signal_handlers(previous_signal_handlers)

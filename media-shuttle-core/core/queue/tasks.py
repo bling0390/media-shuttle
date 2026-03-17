@@ -9,6 +9,7 @@ from typing import Any
 
 from ..bootstrap import build_core_service
 from ..enums import SourceSite, TaskStatus
+from ..logging import setup_logging
 from ..models import DownloadResult, ParsedSource
 from ..utils import cleanup_local_download
 from ..storage.worker_registry import MongoWorkerRegistry
@@ -27,6 +28,8 @@ TASK_DOWNLOAD_SOURCE = "core.queue.tasks.process_download_source"
 TASK_UPLOAD_RESULT = "core.queue.tasks.process_upload_result"
 TASK_FINALIZE = "core.queue.tasks.process_finalize_task"
 TASK_WORKER_CONTROL = "core.queue.tasks.apply_worker_control"
+
+logger = setup_logging()
 
 
 def _utc_now_iso() -> str:
@@ -189,6 +192,9 @@ def _route_failure(event: dict[str, Any], reason: str, task_id: str | None, app)
         base["task_id"] = task_id
 
     if attempt < _max_retries():
+        logger.warning(
+            f"task retry scheduled task_id={base.get('task_id')} attempt={next_attempt} reason={reason}"
+        )
         app.send_task(
             TASK_PARSE_CREATED,
             args=[base],
@@ -202,6 +208,7 @@ def _route_failure(event: dict[str, Any], reason: str, task_id: str | None, app)
             "attempt": next_attempt,
             "reason": reason,
         }
+    logger.error(f"task failed permanently task_id={base.get('task_id')} attempt={next_attempt} reason={reason}")
     return {
         "state": "failed",
         "task_id": base.get("task_id"),
@@ -277,6 +284,8 @@ def _schedule_source_pipelines(
 
 def process_created_event_logic(event: dict[str, Any], app, service=None) -> dict[str, Any]:
     service = service or build_core_service()
+    task_hint = event.get("task_id", "")
+    logger.info(f"parse task received task_id={task_hint or '-'}")
 
     try:
         record = service.create_task_from_event(event)
@@ -306,6 +315,7 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
         )
         if immediate_result is not None:
             return immediate_result
+        logger.info(f"parse task queued downstream pipelines task_id={task_id} source_count={len(parsed_sources)}")
         return {
             "state": "queued",
             "task_id": task_id,
@@ -317,6 +327,7 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
         if task_id:
             service.repository.update_status(task_id, TaskStatus.FAILED, str(exc))
             service.repository.update_runtime_fields(task_id, last_error=str(exc))
+        logger.exception(f"parse task failed task_id={task_id or '-'} reason={exc}")
         return _route_failure(event, str(exc), task_id=task_id, app=app)
 
 
@@ -331,8 +342,14 @@ def process_download_source_logic(
     service.repository.update_status(task_id, TaskStatus.DOWNLOADING)
     parsed = ParsedSource(**source)
     resolved_owner = _normalize_owner_node(owner_node) or _resolve_owner_node()
+    logger.info(
+        f"download started task_id={task_id} site={parsed.site} file_name={parsed.file_name} owner_node={resolved_owner or '-'}"
+    )
     try:
         download = service.pipeline.downloader_registry.download(parsed)
+        logger.info(
+            f"download finished task_id={task_id} site={parsed.site} local_path={download.local_path}"
+        )
         return {
             "ok": True,
             "download": asdict(download),
@@ -342,6 +359,7 @@ def process_download_source_logic(
             "event": event,
         }
     except Exception as exc:
+        logger.warning(f"download failed task_id={task_id} site={parsed.site} reason={exc}")
         return {
             "ok": False,
             "reason": str(exc),
@@ -357,13 +375,20 @@ def process_upload_result_logic(
 ) -> dict[str, Any]:
     service = service or build_core_service()
     if not download_packet.get("ok"):
+        logger.warning(
+            f"upload skipped because download failed task_id={task_id} target={target} reason={download_packet.get('reason', '')}"
+        )
         return download_packet
 
     service.repository.update_status(task_id, TaskStatus.UPLOADING)
     download = DownloadResult(**download_packet["download"])
+    logger.info(
+        f"upload started task_id={task_id} target={target} destination={destination} file_name={download.file_name}"
+    )
     try:
         upload = service.pipeline.uploader_registry.upload(target, download, destination)
         cleanup_local_download(download.local_path)
+        logger.info(f"upload finished task_id={task_id} target={target} location={upload.location}")
         return {
             "ok": True,
             "location": upload.location,
@@ -373,6 +398,7 @@ def process_upload_result_logic(
             "event": download_packet.get("event"),
         }
     except Exception as exc:
+        logger.warning(f"upload failed task_id={task_id} target={target} reason={exc}")
         return {
             "ok": False,
             "reason": str(exc),
@@ -391,12 +417,14 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
         reason = failed[0].get("reason", "failed")
         service.repository.update_status(task_id, TaskStatus.FAILED, reason)
         service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error=reason)
+        logger.error(f"task finalize failed task_id={task_id} reason={reason}")
         return _route_failure(event, reason, task_id=task_id, app=app)
 
     locations = [item["location"] for item in upload_results if item.get("location")]
     message = locations[0] if len(locations) == 1 else "\n".join(locations)
     service.repository.update_status(task_id, TaskStatus.SUCCEEDED, message=message)
     service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error="")
+    logger.info(f"task finalize succeeded task_id={task_id} result_count={len(locations)}")
     return {
         "state": "succeeded",
         "task_id": task_id,

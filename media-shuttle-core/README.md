@@ -44,6 +44,9 @@ export MEDIA_SHUTTLE_NODE_ID='' # optional stable node id; defaults to hostname
 export MEDIA_SHUTTLE_CLEANUP_ON_UPLOAD_SUCCESS=1 # cleanup local downloaded files after upload success or download failure
 export MEDIA_SHUTTLE_WORKER_REGISTRY_ENABLED=1 # persist worker lifecycle to Mongo workers collection
 export MEDIA_SHUTTLE_WORKER_CONTROL_QUEUE_KEY='media_shuttle:worker_control'
+export MEDIA_SHUTTLE_CORE_LOG_DIR='/var/log/media-shuttle-core'
+export MEDIA_SHUTTLE_CORE_LOG_LEVEL='INFO'
+export MEDIA_SHUTTLE_CORE_LOG_RETENTION='14 days'
 ```
 
 When running in `live` mode with `target=RCLONE`, the `rclone` CLI must be
@@ -90,6 +93,9 @@ Deployment notes:
 - To enable Telegram upload in core, set `MEDIA_SHUTTLE_TG_API_ID`,
   `MEDIA_SHUTTLE_TG_API_HASH`, and `MEDIA_SHUTTLE_TG_BOT_TOKEN`, and use
   destination format `tg://chat/@channel_name` or `tg://chat/-1001234567890`.
+- Core logs are written to stdout and to `MEDIA_SHUTTLE_CORE_LOG_DIR`, with file
+  names in `YYYY-MM-DD.log` format. Compose mounts this directory as a named
+  volume.
 - If you use `RCLONE` live upload, put your `rclone` config under
   `media-shuttle-core/rclone/` so it is mounted to `/root/.config/rclone`.
 - Download artifacts are persisted in a named Docker volume mounted at

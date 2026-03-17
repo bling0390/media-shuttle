@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import time
+
 from .container import build_container
+from .logging import setup_logging
 from .models import CreateTaskRequest
 
+logger = setup_logging()
 container = build_container()
 
 try:
@@ -11,6 +15,38 @@ except Exception as exc:  # pragma: no cover
     raise RuntimeError("fastapi is required to run media-shuttle-api") from exc
 
 app = FastAPI(title="media-shuttle-api", version="1.0.0")
+
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    started_at = time.perf_counter()
+    client_ip = request.client.host if request.client is not None else "-"
+    method = request.method
+    path = request.url.path
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        logger.exception(
+            "api request failed method={} path={} client_ip={} duration_ms={}",
+            method,
+            path,
+            client_ip,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "api request method={} path={} status={} client_ip={} duration_ms={}",
+        method,
+        path,
+        response.status_code,
+        client_ip,
+        duration_ms,
+    )
+    return response
 
 
 @app.post("/v1/tasks/parse", status_code=202)

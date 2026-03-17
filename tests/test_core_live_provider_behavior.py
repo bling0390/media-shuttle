@@ -156,6 +156,115 @@ class TestCoreLiveProviderBehavior(unittest.TestCase):
         self.assertEqual(sources[0].page_url, "https://bunkr.sk/v/xyz999")
         self.assertEqual(sources[0].remote_folder, "Single V")
 
+    def test_transfer_live_parser_should_fetch_metadata_but_keep_page_url(self):
+        page_url = "https://transfer.it/t/tWvdyDpHkRCZ"
+
+        def _request(method, url, **kwargs):
+            _ = method
+            body = kwargs.get("json")
+            if url.startswith("https://g.api.mega.co.nz/cs?") and body == [{"a": "xi", "xh": "tWvdyDpHkRCZ"}]:
+                return _FakeResponse(
+                    json.dumps([{"t": "ODMyNDE2NzkzNDI2NDExNTIwLm1wNA", "size": [2001281384, 1, 1, 0, 0]}])
+                )
+            if url.startswith("https://g.api.mega.co.nz/cs?") and body == [{"a": "f", "c": 1, "r": 1, "xnc": 1}]:
+                return _FakeResponse(
+                    json.dumps(
+                        [
+                            {
+                                "f": [
+                                    {
+                                        "h": "WSpRVDJY",
+                                        "p": "",
+                                        "t": 1,
+                                        "a": "kMc_-MYvtHvktKR_EtKNrYS6ZXsmAUQORENQWyp5-KoLADv6ZDmyIhPRoQMUTfMPg-mkKFxq0x5hE2zkpV2dIQ",
+                                        "k": "bIHn-aXqty2-oBzD25ylBg",
+                                    },
+                                    {
+                                        "h": "KKw1zT5Z",
+                                        "p": "WSpRVDJY",
+                                        "t": 0,
+                                        "a": "tx4PHm0S-aCYRJ1lkxZ9G874-X1W0LE_W5DUxiAw0-CFDR35mlrgMcTtqa0RIn-yRVniCnlj-iAJ9AFzG4bQu_Bwi6EhXIaqRtW5urR16ZI",
+                                        "k": "LP0H0lL_yDJKEpNYLUIIexwivChb_ikzpN8t4wPUhL0",
+                                        "s": 2001281384,
+                                    },
+                                ]
+                            }
+                        ]
+                    )
+                )
+            raise AssertionError(f"unexpected url/body: {url} {body}")
+
+        with patch("core.providers.parsers_sites.transfer.httpx.request", side_effect=_request):
+            registry = default_parser_registry(mode="live")
+            sources = registry.parse(page_url)
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].site, "TRANSFERIT")
+        self.assertEqual(sources[0].page_url, page_url)
+        self.assertEqual(sources[0].download_url, page_url)
+        self.assertEqual(sources[0].file_name, "832416793426411520.mp4")
+        self.assertEqual(sources[0].remote_folder, "tWvdyDpHkRCZ")
+        self.assertEqual(sources[0].metadata.get("share_id"), "tWvdyDpHkRCZ")
+        self.assertEqual(sources[0].metadata.get("node_handle"), "KKw1zT5Z")
+        self.assertFalse(sources[0].metadata.get("resolved_live"))
+
+    def test_filester_live_parser_should_fetch_metadata_but_keep_page_url(self):
+        page_url = "https://filester.me/d/QHdR2xo"
+        html = """
+        <html>
+          <head>
+            <title>832416793426411520.mp4 | filester.me</title>
+            <meta property="og:title" content="832416793426411520.mp4">
+          </head>
+          <body>
+            <h1>832416793426411520.mp4</h1>
+            <script>
+              window.fileUUID = "6c0e217e-3d95-4acf-8d33-64c6b98f87ee";
+            </script>
+          </body>
+        </html>
+        """
+
+        with patch("core.providers.parsers_sites.filester.http_text", return_value=html):
+            registry = default_parser_registry(mode="live")
+            sources = registry.parse(page_url)
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].site, "FILESTER")
+        self.assertEqual(sources[0].page_url, page_url)
+        self.assertEqual(sources[0].download_url, page_url)
+        self.assertEqual(sources[0].file_name, "832416793426411520.mp4")
+        self.assertEqual(sources[0].remote_folder, "6c0e217e-3d95-4acf-8d33-64c6b98f87ee")
+        self.assertEqual(sources[0].metadata.get("file_slug"), "QHdR2xo")
+        self.assertEqual(sources[0].metadata.get("file_uuid"), "6c0e217e-3d95-4acf-8d33-64c6b98f87ee")
+        self.assertFalse(sources[0].metadata.get("resolved_live"))
+
+    def test_turbo_live_parser_should_fetch_metadata_but_keep_page_url(self):
+        page_url = "https://turbo.cr/v/gLlVkUMFwaO"
+        html = """
+        <html>
+          <head>
+            <title>gLlVkUMFwaO.mp4 — turbo.cr</title>
+          </head>
+          <body>
+            <h1>gLlVkUMFwaO.mp4</h1>
+          </body>
+        </html>
+        """
+
+        with patch("core.providers.parsers_sites.turbo.http_text", return_value=html):
+            registry = default_parser_registry(mode="live")
+            sources = registry.parse(page_url)
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0].site, "TURBO")
+        self.assertEqual(sources[0].page_url, page_url)
+        self.assertEqual(sources[0].download_url, page_url)
+        self.assertEqual(sources[0].file_name, "gLlVkUMFwaO.mp4")
+        self.assertEqual(sources[0].remote_folder, "gLlVkUMFwaO")
+        self.assertEqual(sources[0].metadata.get("slug"), "gLlVkUMFwaO")
+        self.assertFalse(sources[0].metadata.get("resolved_live"))
+
 
 if __name__ == "__main__":
     unittest.main()

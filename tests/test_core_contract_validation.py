@@ -24,9 +24,42 @@ class TestContractValidation(unittest.TestCase):
         }
         validate_task_created_event(event)
 
+    def test_valid_created_event_should_accept_telegram_destination(self):
+        event = {
+            "spec_version": "task.created.v1",
+            "task_id": "1",
+            "task_type": "parse_link",
+            "idempotency_key": "k",
+            "created_at": "2026-02-26T00:00:00Z",
+            "payload": {
+                "url": "https://example.com",
+                "requester_id": "u",
+                "target": "TELEGRAM",
+                "destination": "tg://chat/@media_shuttle",
+            },
+        }
+        validate_task_created_event(event)
+
     def test_invalid_created_event(self):
         with self.assertRaises(ContractError):
             validate_task_created_event({"spec_version": "task.created.v1"})
+
+    def test_invalid_created_event_should_reject_bad_telegram_destination(self):
+        event = {
+            "spec_version": "task.created.v1",
+            "task_id": "1",
+            "task_type": "parse_link",
+            "idempotency_key": "k",
+            "created_at": "2026-02-26T00:00:00Z",
+            "payload": {
+                "url": "https://example.com",
+                "requester_id": "u",
+                "target": "TELEGRAM",
+                "destination": "channel:@media_shuttle",
+            },
+        }
+        with self.assertRaises(ContractError):
+            validate_task_created_event(event)
 
     def test_valid_status_event(self):
         event = {

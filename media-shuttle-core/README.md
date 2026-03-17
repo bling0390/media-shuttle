@@ -62,6 +62,39 @@ docker build \
 If your team uses a private `rclone` build (for example with 115 support),
 replace the build-arg URL with your private install script URL.
 
+## 2.1 Docker Compose deploy
+
+Module-local compose file:
+
+```bash
+cd media-shuttle-core
+export MEDIA_SHUTTLE_REDIS_URL='redis://your-redis-host:6379/0'
+export MEDIA_SHUTTLE_MONGO_URI='mongodb://your-mongo-host:27017'
+docker compose up -d --build
+```
+
+Compose file path: `media-shuttle-core/docker-compose.yml`
+
+Deployment notes:
+
+- Compose only deploys `core-worker`. Redis and MongoDB are expected to be
+  external services.
+- You must provide `MEDIA_SHUTTLE_REDIS_URL` and `MEDIA_SHUTTLE_MONGO_URI`
+  explicitly before `docker compose up`.
+- Do not use container-local `localhost` unless Redis/MongoDB are running in the
+  same container, which is not the case here.
+- Default compose mode is `MEDIA_SHUTTLE_IO_MODE=live`.
+- Default upload target queue suffix is `RCLONE` only. If you want Telegram
+  upload workers to consume TG tasks, set `MEDIA_SHUTTLE_UPLOAD_QUEUE_SUFFIXES`
+  to include `TELEGRAM`.
+- To enable Telegram upload in core, set `MEDIA_SHUTTLE_TG_API_ID`,
+  `MEDIA_SHUTTLE_TG_API_HASH`, and `MEDIA_SHUTTLE_TG_BOT_TOKEN`, and use
+  destination format `tg://chat/@channel_name` or `tg://chat/-1001234567890`.
+- If you use `RCLONE` live upload, put your `rclone` config under
+  `media-shuttle-core/rclone/` so it is mounted to `/root/.config/rclone`.
+- Download artifacts are persisted in a named Docker volume mounted at
+  `/var/lib/media-shuttle/downloads`.
+
 ## 3. Run worker
 
 ```bash

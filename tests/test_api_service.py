@@ -26,6 +26,27 @@ class TestApiService(unittest.TestCase):
         self.assertEqual(event["spec_version"], "task.created.v1")
         self.assertEqual(event["payload"]["url"], request.url)
 
+    def test_create_task_should_accept_telegram_destination(self):
+        request = CreateTaskRequest(
+            url="https://example.com/file.mp4",
+            requester_id="u-telegram",
+            target="TELEGRAM",
+            destination="tg://chat/@media_shuttle",
+        )
+        record = self.container.service.create_parse_task(request)
+        self.assertEqual(record.target, "TELEGRAM")
+        self.assertEqual(record.destination, "tg://chat/@media_shuttle")
+
+    def test_create_task_should_reject_invalid_telegram_destination(self):
+        request = CreateTaskRequest(
+            url="https://example.com/file.mp4",
+            requester_id="u-telegram",
+            target="TELEGRAM",
+            destination="channel:@media_shuttle",
+        )
+        with self.assertRaises(ValueError):
+            self.container.service.create_parse_task(request)
+
     def test_list_and_get_task(self):
         request = CreateTaskRequest(
             url="https://example.com/a.mp4",

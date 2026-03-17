@@ -127,7 +127,7 @@ Examples:
   - `MEDIA_SHUTTLE_MAX_RETRIES`
   - `MEDIA_SHUTTLE_CORE_CONCURRENCY`
   - `MEDIA_SHUTTLE_CORE_POLL_SECONDS`
-  - `MEDIA_SHUTTLE_CORE_WORKER_ROLE=all|parse|download|upload`
+  - `MEDIA_SHUTTLE_CORE_WORKER_ROLE=all|parse|download|upload|control`
   - `MEDIA_SHUTTLE_CORE_WORKER_QUEUES` (explicit queue override)
   - `MEDIA_SHUTTLE_WORKER_REGISTRY_ENABLED` (default `1`, persist worker status to Mongo when storage backend is `mongo`)
   - `MEDIA_SHUTTLE_SITE_QUEUE_SUFFIXES`

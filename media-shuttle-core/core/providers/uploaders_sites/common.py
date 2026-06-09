@@ -7,10 +7,11 @@ from datetime import date
 from ...models import DownloadResult
 
 # Characters that 115 / rclone tend to reject or misinterpret in a remote
-# path. `&` is the worst offender - some rclone backends treat it as a
-# query separator, others store the path with the literal `&` and then
-# read-back paths fail. We replace these with a single underscore.
-_RCLONE_PATH_BAD = re.compile(r"[&?#%+\[\]<>:\"\\|*\x00-\x1f]+")
+# path. Note: `&` is intentionally NOT in this list - tested with the
+# 115 backend and it accepts `&` in filenames. `?#%` break URL parsing on
+# the rclone command line; `<>:\"\\|*\x00` are filesystem-forbidden on
+# Windows and may also confuse 115's path parser.
+_RCLONE_PATH_BAD = re.compile(r"[?#%+\[\]<>:\"\\|*\x00-\x1f]+")
 
 
 def _rclone_path_safe(name: str) -> str:

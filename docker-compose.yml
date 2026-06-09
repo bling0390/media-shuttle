@@ -1,13 +1,23 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No host port: redis is consumed by api / core-worker / tg only over
+    # the docker internal network. Avoid exposing 6379 publicly.
+    expose:
+      - "6379"
 
   mongo:
     image: mongo:7
-    ports:
-      - "27017:27017"
+    # No host port: same reason. api / core-worker reach it via
+    # mongodb://mongo:27017 inside the compose network only.
+    environment:
+      # Turn on auth so a random public host that happens to share the
+      # same network namespace (or finds an open route in) cannot wipe
+      # collections. See docs/issues/0005 (post-ransomware hardening).
+      MONGO_INITDB_ROOT_USERNAME: media-shuttle
+      MONGO_INITDB_ROOT_PASSWORD: media-shuttle-dev-pw
+    expose:
+      - "27017"
 
   api:
     build:
@@ -17,7 +27,7 @@ services:
       - MEDIA_SHUTTLE_STORAGE_BACKEND=mongo
       - MEDIA_SHUTTLE_QUEUE_BACKEND=redis
       - MEDIA_SHUTTLE_REDIS_PUBLISH_MODE=celery
-      - MEDIA_SHUTTLE_MONGO_URI=mongodb://mongo:27017
+      - MEDIA_SHUTTLE_MONGO_URI=mongodb://media-shuttle:media-shuttle-dev-pw@mongo:27017
     depends_on:
       - redis
       - mongo
@@ -33,13 +43,18 @@ services:
       - MEDIA_SHUTTLE_REDIS_URL=redis://redis:6379/0
       - MEDIA_SHUTTLE_STORAGE_BACKEND=mongo
       - MEDIA_SHUTTLE_QUEUE_BACKEND=redis
-      - MEDIA_SHUTTLE_MONGO_URI=mongodb://mongo:27017
+      - MEDIA_SHUTTLE_MONGO_URI=mongodb://media-shuttle:media-shuttle-dev-pw@mongo:27017
       - MEDIA_SHUTTLE_MAX_RETRIES=2
       - MEDIA_SHUTTLE_CORE_CONCURRENCY=3
       - MEDIA_SHUTTLE_RETRY_QUEUE_KEY=media_shuttle:task_retry
       - MEDIA_SHUTTLE_DOWNLOAD_QUEUE_KEY=media_shuttle:task_download
       - MEDIA_SHUTTLE_UPLOAD_QUEUE_KEY=media_shuttle:task_upload
       - MEDIA_SHUTTLE_CORE_WORKER_ROLE=all
+    volumes:
+      # Mount the rclone config so the worker can talk to the 115 drive.
+      # The config file lives outside the repo and contains the session
+      # cookie used to authenticate against the 115 backend.
+      - /root/media-shuttle-logs/rclone.conf:/root/.config/rclone/rclone.conf:ro
     depends_on:
       - redis
       - mongo

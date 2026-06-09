@@ -35,11 +35,16 @@ def run_bot() -> None:
             await message.reply("Usage: /leech <url>")
             return
         url = args[1]
+        # destination is omitted: api defaults it to ``115:/`` so the
+        # final upload path is ``115:/<date>/<folder>/<file>``. Callers
+        # that need a custom subpath can add it as the second arg:
+        # ``/leech <url> <destination>`` (still ``115:/<sub>`` form).
+        destination = args[2] if len(args) >= 3 else None
         result = handlers.on_leech_command(
             requester_id=str(message.from_user.id),
             url=url,
             target="RCLONE",
-            destination="/",
+            destination=destination,
         )
         await message.reply(f"queued: {result.get('task_id', '-')}")
 

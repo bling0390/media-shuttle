@@ -54,7 +54,10 @@ def create_parse_task(body: dict):
     try:
         request = CreateTaskRequest(**body)
         record = container.service.create_parse_task(request)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
+        # TypeError covers malformed bodies that omit required fields
+        # (e.g. ``{}``); ValueError covers semantic errors raised by
+        # ``validate_create_request``.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"task_id": record.task_id, "status": "QUEUED"}
 

@@ -42,7 +42,8 @@ def upload_rclone_live(download: DownloadResult, destination: str) -> UploadResu
     target = f"{remote}:{full_path}" if remote else full_path
     cmd = ["rclone", "copyto", download.local_path, target]
     subprocess.run(cmd, check=True)
-    # Display path for the response: keep the original destination string
-    # in front of the relative remote_name so callers see exactly what was
-    # built.
-    return UploadResult(location=f"rclone://{destination.rstrip('/')}/{remote_name}")
+    # Display path for the response. The actual rclone target we built
+    # above is ``<remote>:<dest_path>/<remote_name>``; format the
+    # ``location`` to match so it round-trips back to the same target.
+    location_target = target if remote else remote_name
+    return UploadResult(location=f"rclone://{location_target.lstrip('/')}")

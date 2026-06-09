@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from .contracts import validate_create_request
+from .contracts import DEFAULT_RCLONE_DESTINATION, validate_create_request
 from .models import CreateTaskRequest, TaskRecord, WorkerRecord, utc_now_iso
 from .queue import TaskPublisher
 from .repository import TaskRepository, WorkerRepository
@@ -27,6 +27,13 @@ class ApiService:
         }
         validate_create_request(payload)
 
+        # ``validate_create_request`` mutates ``payload["destination"]``
+        # to the RCLONE default (``115:/``) when the caller didn't
+        # provide one. Persist the resolved value so the task record and
+        # downstream worker logs show what the upload actually targets
+        # rather than the original empty string.
+        resolved_destination = payload.get("destination") or DEFAULT_RCLONE_DESTINATION
+
         task_id = str(uuid.uuid4())
         idempotency_key = make_idempotency_key(request.url, request.requester_id)
         timestamp = utc_now_iso()
@@ -47,7 +54,7 @@ class ApiService:
             requester_id=request.requester_id,
             url=request.url,
             target=request.target,
-            destination=request.destination,
+            destination=resolved_destination,
             created_at=timestamp,
             updated_at=timestamp,
         )

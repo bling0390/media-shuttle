@@ -16,7 +16,12 @@ class TgHandlers:
     def __init__(self, api_client: ApiClient) -> None:
         self.api = api_client
 
-    def on_leech_command(self, requester_id: str, url: str, target: str, destination: str) -> dict:
+    def on_leech_command(
+        self, requester_id: str, url: str, target: str, destination: str | None = None
+    ) -> dict:
+        # For RCLONE the api defaults destination to ``115:/`` so the
+        # final path is ``115:/<date>/<folder>/<file>``. Callers that
+        # want a custom subpath can still pass ``destination=...``.
         return self.api.create_parse_task(
             url=url,
             requester_id=requester_id,

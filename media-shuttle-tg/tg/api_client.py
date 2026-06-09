@@ -22,17 +22,20 @@ class ApiClient:
         payload = response.text
         return response.json() if payload else {}
 
-    def create_parse_task(self, url: str, requester_id: str, target: str, destination: str) -> dict:
-        return self._request(
-            "POST",
-            "/v1/tasks/parse",
-            body={
-                "url": url,
-                "requester_id": requester_id,
-                "target": target,
-                "destination": destination,
-            },
-        )
+    def create_parse_task(
+        self, url: str, requester_id: str, target: str, destination: str | None = None
+    ) -> dict:
+        # ``destination`` is optional for RCLONE targets; the api applies
+        # the default ``115:/`` so the final path is
+        # ``115:/<date>/<folder>/<file>``.
+        body: dict = {
+            "url": url,
+            "requester_id": requester_id,
+            "target": target,
+        }
+        if destination:
+            body["destination"] = destination
+        return self._request("POST", "/v1/tasks/parse", body=body)
 
     def queue_stats(self) -> dict:
         return self._request("GET", "/v1/stats/queue")

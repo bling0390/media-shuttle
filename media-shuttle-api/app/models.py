@@ -14,7 +14,14 @@ class CreateTaskRequest:
     url: str
     requester_id: str
     target: str
-    destination: str
+    # `destination` is optional. If omitted (or empty), the server fills in
+    # the default for the target. For RCLONE the default is ``"115:/"``
+    # which, combined with the worker's ``MEDIA_SHUTTLE_USE_DATE_CATEGORY=1``
+    # and the per-source ``remote_folder`` set by the parsers, produces a
+    # final path of the form ``115:/<date>/<folder>/<file>``. For
+    # TELEGRAM the caller must still supply a destination (no sensible
+    # default).
+    destination: str = ""
 
 
 @dataclass

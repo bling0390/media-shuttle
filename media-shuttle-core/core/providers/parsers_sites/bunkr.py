@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote as urllib_quote, urljoin, urlparse
 
 from ...enums import SourceSite
 from ...models import ParsedSource
@@ -69,7 +69,20 @@ def _parse_bunkr_single_page(url: str, html: str, folder_name: str) -> list[Pars
     direct_url = _bunkr_resolve_single_file_download_url(url, html)
     if not direct_url:
         return []
-    return [_bunkr_source(page_url=url, download_url=direct_url, remote_folder=folder_name)]
+    # The page title usually includes the file extension (e.g. "Foo.mp4").
+    # Use the title (without the .<ext> suffix) as the album/folder name and
+    # the original upload filename (`ogname`) as the file name. Both are
+    # HTML-entity-decoded by their extractors.
+    folder = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", folder_name).strip() or folder_name
+    file_name = _bunkr_file_name(html, fallback=folder_name)
+    return [
+        _bunkr_source(
+            page_url=url,
+            download_url=direct_url,
+            remote_folder=folder,
+            file_name=file_name,
+        )
+    ]
 
 
 def _bunkr_headers(referer: str | None = None) -> dict[str, str]:
@@ -89,13 +102,25 @@ def _bunkr_folder_name(html: str, fallback: str = "album") -> str:
         r'<h1[^>]*class=["\'][^"\']*\btruncate\b[^"\']*["\'][^>]*>(.*?)</h1>',
         r'<h1[^>]*class=["\'][^"\']*\btext-\[20px\]\b[^"\']*["\'][^>]*>(.*?)</h1>',
         r'<h1[^>]*class=["\'][^"\']*\btext-\[24px\]\b[^"\']*["\'][^>]*>(.*?)</h1>',
+        r'<title>(?:Download\s+)?(.*?)</title>',
     ]
     for pattern in patterns:
         matched = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
         if not matched:
             continue
         raw = re.sub(r"<[^>]+>", " ", matched.group(1))
-        cleaned = re.sub(r"\s+", " ", raw).strip()
+        # Decode HTML entities like &amp; -> & so the title matches what the
+        # user sees on the page (and what bunkr's "ogname" var carries).
+        try:
+            import html as _html_lib
+
+            unescaped = _html_lib.unescape(raw)
+        except Exception:
+            unescaped = raw
+        cleaned = re.sub(r"\s+", " ", unescaped).strip()
+        # The <title> for single-file pages usually looks like
+        # "Download Foo.mp4" - drop the redundant prefix.
+        cleaned = re.sub(r"^download\s+", "", cleaned, flags=re.IGNORECASE)
         if cleaned:
             return cleaned
     return fallback
@@ -155,7 +180,71 @@ def _bunkr_collect_media_links(url: str, html: str, depth: int = 0, max_depth: i
     return list(dict.fromkeys(links))
 
 
+def _bunkr_file_name(html: str, fallback: str = "file.bin") -> str:
+    # The wrapper page defines `var ogname = "Real Filename.mp4";` which is
+    # the original filename as uploaded by the user. Prefer it over deriving
+    # from the title (which has the .mp4 extension too but is less reliable).
+    matched = re.search(
+        r'var\s+ogname\s*=\s*["\']([^"\']+)["\']',
+        html,
+        flags=re.IGNORECASE,
+    )
+    if matched:
+        try:
+            import html as _html_lib
+
+            unescaped = _html_lib.unescape(matched.group(1)).strip()
+        except Exception:
+            unescaped = matched.group(1).strip()
+        if unescaped:
+            return unescaped
+    return fallback
+
+
+def _bunkr_origin_from_url(url: str) -> str:
+    """Return scheme+netloc of a URL (used to build API endpoints)."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _bunkr_file_id_from_html(html: str) -> str:
+    """Extract the numeric bunkr file id from the page wrapper.
+
+    The bunkr.cr (or .si/.la/etc.) page embeds:
+
+        <script defer data-file-id="57930011" src="../js/lv.js"></script>
+
+    while the dl.bunkr.cr download wrapper embeds:
+
+        <a id="download-btn" data-id="57930011" ...>
+
+    The numeric id is the key to the click flow that yields a real CDN URL.
+    """
+    matched = re.search(
+        r'data-(?:file-)?id=["\'](\d{3,})["\']',
+        html,
+        flags=re.IGNORECASE,
+    )
+    return matched.group(1).strip() if matched else ""
+
+
 def _bunkr_resolve_single_file_download_url(url: str, html: str) -> str:
+    # Primary path (current bunkr behavior, 2026-06): the page exposes a
+    # numeric file id (data-file-id / data-id). The real CDN URL is hidden
+    # behind a 2-step API flow that the click handler in dl.bunkr.cr's
+    # wrapper page performs:
+    #   1. POST {dl-host}/api/_001_v2  body={"id": <file_id>}
+    #      -> { mediafiles, path, original }
+    #   2. GET https://glb-apisign.cdn.cr/sign?path=<path>
+    #      -> { token, ex }
+    #   3. final = "<mediafiles><path>?token=<token>&ex=<ex>&n=<urlencoded original>"
+    file_id = _bunkr_file_id_from_html(html)
+    if file_id:
+        signed = _bunkr_sign_via_api(file_id, source_url=url, source_html=html)
+        if signed:
+            return signed
+
+    # Legacy path 1: bunkr used to embed a video/<source> tag.
     matched = re.search(
         r'<video[^>]*id=["\']player["\'][^>]*>.*?<source[^>]*src=["\']([^"\']+)["\']',
         html,
@@ -164,11 +253,27 @@ def _bunkr_resolve_single_file_download_url(url: str, html: str) -> str:
     if matched:
         return urljoin(url, matched.group(1).strip())
 
+    # Legacy path 2: dl.bunkr.* /f/<slug> wrapper may still embed
+    #   <script data-domain="get.bunkrr.su" data-v="<uuid>.mp4">
+    # but get.bunkrr.su has been observed to be unreachable (connection
+    # refused). Kept as a best-effort fallback in case the mirror still
+    # serves it.
+    cdn_uuid = re.search(
+        r'data-domain=["\']get\.bunkrr\.su["\'][^>]*data-v=["\']([^"\']+)["\']',
+        html,
+        flags=re.IGNORECASE,
+    )
+    if cdn_uuid:
+        return f"https://get.bunkrr.su/v/{cdn_uuid.group(1).strip()}"
+
     slug = _bunkr_slug(url)
     parsed = urlparse(url)
     path = parsed.path.lower()
     endpoint_prefix = f"{parsed.scheme}://{parsed.netloc}"
 
+    # Old /v/<slug> pages used to expose /api/gimmeurl. The endpoint has
+    # been observed to 404 on current mirrors; kept as a best-effort legacy
+    # path.
     if "/v/" in path:
         try:
             payload = http_json(
@@ -186,25 +291,9 @@ def _bunkr_resolve_single_file_download_url(url: str, html: str) -> str:
         except Exception:
             pass
 
-    if "/f/" in path:
-        try:
-            payload = http_json(
-                f"{endpoint_prefix}/api/vs",
-                headers={
-                    "Content-Type": "application/json",
-                    **_bunkr_headers(referer=url),
-                },
-                method="POST",
-                body={"slug": slug},
-            )
-            encrypted = str(payload.get("url", "")).strip()
-            timestamp = int(payload.get("timestamp", 0))
-            if encrypted and timestamp > 0:
-                decrypted = _bunkr_decrypt_link(encrypted, timestamp)
-                if decrypted:
-                    return decrypted
-        except Exception:
-            pass
+    # /f/<slug> used to expose /api/vs with an XOR-encrypted URL. That API
+    # has also been observed to 404. Removed; the new code path above
+    # (file_id -> _001_v2 -> sign) supersedes it.
 
     download_link = re.search(
         r'<a[^>]*class=["\'][^"\']*\bic-download-01\b[^"\']*["\'][^>]*href=["\']([^"\']+)["\']',
@@ -221,6 +310,13 @@ def _bunkr_resolve_single_file_download_url(url: str, html: str) -> str:
         nested_html = http_text(intermediate, headers=_bunkr_headers(referer=url))
     except Exception:
         return ""
+    # The nested page is now the dl.bunkr.* wrapper, which carries a
+    # data-id="<file_id>". Run the click flow on it.
+    nested_file_id = _bunkr_file_id_from_html(nested_html)
+    if nested_file_id:
+        signed = _bunkr_sign_via_api(nested_file_id, source_url=intermediate, source_html=nested_html)
+        if signed:
+            return signed
     nested_link = re.search(
         r'<a[^>]*class=["\'][^"\']*\bic-download-01\b[^"\']*["\'][^>]*href=["\']([^"\']+)["\']',
         nested_html,
@@ -229,6 +325,69 @@ def _bunkr_resolve_single_file_download_url(url: str, html: str) -> str:
     if nested_link:
         return urljoin(intermediate, nested_link.group(1).strip())
     return ""
+
+
+def _bunkr_sign_via_api(file_id: str, source_url: str, source_html: str) -> str:
+    """Replicate the dl.bunkr.cr click handler to obtain a signed CDN URL.
+
+    Returns the final signed URL on success, or "" on any failure (the
+    caller falls back to the next resolution strategy).
+    """
+    # Find the dl.bunkr.<tld> download wrapper. It's the page that hosts
+    # data-id="<file_id>"; the source url we already have is either the
+    # bunkr.cr/f/<slug> page (no dl. host) or the wrapper itself. If the
+    # source isn't on dl.bunkr.* we need to fetch the wrapper from the
+    # matching dl host - we discover it from the original page's <a>
+    # ic-download-01 href, when present.
+    wrapper_url = source_url
+    parsed = urlparse(source_url)
+    if not parsed.netloc.startswith("dl."):
+        matched = re.search(
+            r'href=["\']([^"\']*dl\.bunkr\.[a-z]+/[^"\']+)["\']',
+            source_html,
+            flags=re.IGNORECASE,
+        )
+        if not matched:
+            return ""
+        wrapper_url = urljoin(source_url, matched.group(1).strip())
+
+    try:
+        meta = http_json(
+            f"{_bunkr_origin_from_url(wrapper_url).rstrip('/')}/api/_001_v2",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": f"{parsed.scheme}://{parsed.netloc}",
+                "Referer": wrapper_url,
+                **_bunkr_headers(referer=source_url),
+            },
+            method="POST",
+            body={"id": file_id},
+        )
+    except Exception:
+        return ""
+
+    mediafiles = str(meta.get("mediafiles") or "").strip()
+    media_path = str(meta.get("path") or "").strip()
+    original = str(meta.get("original") or "").strip()
+    if not mediafiles or not media_path:
+        return ""
+
+    try:
+        sign = http_json(
+            "https://glb-apisign.cdn.cr/sign?path=" + (urllib_quote(media_path, safe="")),
+            headers={**_bunkr_headers(referer=wrapper_url)},
+        )
+    except Exception:
+        return ""
+    token = str(sign.get("token") or "").strip()
+    ex = str(sign.get("ex") or "").strip()
+    if not token or not ex:
+        return ""
+
+    final = f"{mediafiles.rstrip('/')}{media_path}?token={token}&ex={ex}"
+    if original:
+        final += f"&n={urllib_quote(original, safe='')}"
+    return final
 
 
 def _bunkr_source(

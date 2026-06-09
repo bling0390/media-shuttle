@@ -42,7 +42,29 @@ def http_download(url: str, path: Path, headers: dict[str, str] | None = None) -
         follow_redirects=True,
     )
     response.raise_for_status()
+
+    # Sanity-check the response: bunkr's CDN sometimes returns an HTML
+    # "preview" page (text/html) instead of the actual file. Reject those
+    # so we don't ship a 3 KB error page up to 115 and pretend it's a video.
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type.startswith("text/html"):
+        snippet = response.text[:200] if response.text else ""
+        raise RuntimeError(
+            f"download rejected: unexpected content-type {content_type!r} from {url} "
+            f"(likely an HTML wrapper page, not a media file). body[:200]={snippet!r}"
+        )
+
     data = response.content
+    # An empty/tiny body is almost always a failure mode (soft 404, redirect
+    # landing page, JSON error envelope). Real media files are at least
+    # 1 KB. Without this check, a 57-byte HTML 404 page gets uploaded to
+    # 115 and the task is marked SUCCEEDED.
+    if len(data) < 1024:
+        raise RuntimeError(
+            f"download rejected: response body is too small ({len(data)} bytes) for {url}; "
+            f"content-type={content_type!r}"
+        )
+
     path.write_bytes(data)
     return len(data)
 

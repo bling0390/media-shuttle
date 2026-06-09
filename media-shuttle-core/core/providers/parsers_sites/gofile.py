@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import os
-import time
 from urllib.parse import urlencode, urlparse
 
 from ...enums import SourceSite
@@ -10,10 +8,11 @@ from ...models import ParsedSource
 from ..user_agents import with_random_user_agent
 from .common import host, http_json, safe_name, segments
 
-_GOFILE_TOKEN: str = ""
-_GOFILE_TOKEN_EXPIRES_AT: int = 0
-_GOFILE_WT_SALT = "gf2026x"
-_GOFILE_DEFAULT_LANGUAGE = os.getenv("MEDIA_SHUTTLE_GOFILE_LANGUAGE", "en-US").strip() or "en-US"
+# Gofile API v2 base URL. Older code targeted v1 (POST /accounts, custom
+# X-Website-Token / X-BL headers + urlencoded wt/bbl parameters), which
+# gofile shut down in 2024. v2 uses a plain JWT bearer token + standard
+# Authorization header. See https://gofile.io/api for the spec.
+_GOFILE_API_BASE = "https://api.gofile.io"
 
 
 def is_gofile(url: str) -> bool:
@@ -21,6 +20,10 @@ def is_gofile(url: str) -> bool:
 
 
 def parse_gofile(url: str) -> list[ParsedSource]:
+    """Mock-mode parser: emit a placeholder source keyed off the share id.
+
+    Kept for offline tests; live mode in `parse_gofile_live` supersedes it.
+    """
     segs = segments(url)
     resource_id = segs[-1] if segs else "unknown"
     remote_folder = resource_id if "/d/" in urlparse(url).path else None
@@ -37,6 +40,22 @@ def parse_gofile(url: str) -> list[ParsedSource]:
 
 
 def parse_gofile_live(url: str) -> list[ParsedSource]:
+    """Gofile API v2 live parser.
+
+    Flow:
+        1. Extract the content id from the share URL (last path segment
+           after /d/).
+        2. Get a bearer token. Two options, in priority order:
+            a. MEDIA_SHUTTLE_GOFILE_TOKEN env var (recommended for
+               server-side automation; long-lived JWT).
+            b. POST /accounts to auto-create a guest account (rate-limited
+               by gofile; one token per host).
+        3. GET /contents/{contentId}?cache=true with the bearer token.
+        4. Recurse into child folders; emit one ParsedSource per file.
+           The download_url from v2 already includes the signed CDN path
+           (e.g. https://store-eu-1.gofile.io/.../<file>?token=...); the
+           downloader reuses it as-is.
+    """
     content_id = _gofile_extract_id(url)
     if not content_id:
         return []
@@ -58,18 +77,19 @@ def _gofile_extract_id(url: str) -> str | None:
 
 
 def _gofile_get_token() -> str:
-    global _GOFILE_TOKEN, _GOFILE_TOKEN_EXPIRES_AT
+    """Resolve a gofile v2 JWT bearer token.
 
+    Order of preference:
+        1. MEDIA_SHUTTLE_GOFILE_TOKEN env (long-lived user account token)
+        2. Auto-create guest via POST /accounts (no auth required; the
+           returned token is what v2 expects in `Authorization: Bearer`).
+    """
     static_token = os.getenv("MEDIA_SHUTTLE_GOFILE_TOKEN", "").strip()
     if static_token:
         return static_token
 
-    now = int(time.time())
-    if _GOFILE_TOKEN and now < _GOFILE_TOKEN_EXPIRES_AT:
-        return _GOFILE_TOKEN
-
     resp = http_json(
-        "https://api.gofile.io/accounts",
+        f"{_GOFILE_API_BASE}/accounts",
         headers=with_random_user_agent(
             {
                 "Accept": "*/*",
@@ -78,16 +98,25 @@ def _gofile_get_token() -> str:
         ),
         method="POST",
     )
-    token = str(resp.get("data", {}).get("token", "")).strip() if resp.get("status") == "ok" else ""
+    if resp.get("status") != "ok":
+        raise RuntimeError(
+            f"failed to create gofile guest account: status={resp.get('status')} data={resp.get('data')}"
+        )
+    token = str(resp.get("data", {}).get("token", "")).strip()
     if not token:
-        raise RuntimeError("failed to get gofile token")
-
-    _GOFILE_TOKEN = token
-    _GOFILE_TOKEN_EXPIRES_AT = now + 60 * 60
+        raise RuntimeError("gofile /accounts response missing data.token")
     return token
 
 
 def _gofile_list_sources(content_id: str, token: str, password: str | None = None) -> list[ParsedSource]:
+    """Walk a gofile content tree and return one ParsedSource per file.
+
+    A single /d/<id> URL can be either a file or a folder. Folders recurse;
+    files are emitted with the v2 CDN link (which already includes the
+    signed token in the query string). The same token is passed to the
+    downloader via metadata so it can set the accountToken cookie on the
+    request to the CDN host.
+    """
     request_headers = with_random_user_agent(
         {
             "Accept": "*/*",
@@ -95,17 +124,13 @@ def _gofile_list_sources(content_id: str, token: str, password: str | None = Non
             "Authorization": f"Bearer {token}",
         }
     )
-    user_agent = request_headers["User-Agent"]
-    language = _GOFILE_DEFAULT_LANGUAGE
-    request_headers["X-Website-Token"] = _gofile_build_website_token(token, user_agent, language)
-    request_headers["X-BL"] = language
 
-    params = {"cache": "true"}
+    params: dict[str, str] = {"cache": "true"}
     if password:
         params["password"] = password
 
     resp = http_json(
-        f"https://api.gofile.io/contents/{content_id}?{urlencode(params)}",
+        f"{_GOFILE_API_BASE}/contents/{content_id}?{urlencode(params)}",
         headers=request_headers,
         method="GET",
     )
@@ -156,10 +181,3 @@ def _gofile_list_sources(content_id: str, token: str, password: str | None = Non
             )
         )
     return items
-
-
-def _gofile_build_website_token(token: str, user_agent: str, language: str, now: int | None = None) -> str:
-    unix_time = int(time.time() if now is None else now)
-    time_bucket = unix_time // (4 * 60 * 60)
-    payload = f"{user_agent}::{language}::{token}::{time_bucket}::{_GOFILE_WT_SALT}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

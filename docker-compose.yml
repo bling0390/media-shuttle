@@ -21,10 +21,14 @@ services:
     depends_on:
       - redis
       - mongo
+    ports:
+      - "8000:8000"
 
   core-worker:
     build:
       context: ./media-shuttle-core
+    env_file:
+      - /root/media-shuttle-logs/core.env
     environment:
       - MEDIA_SHUTTLE_REDIS_URL=redis://redis:6379/0
       - MEDIA_SHUTTLE_STORAGE_BACKEND=mongo
@@ -43,7 +47,7 @@ services:
   tg:
     build:
       context: ./media-shuttle-tg
-    environment:
-      - MEDIA_SHUTTLE_API_BASE_URL=http://api:8000
+    env_file:
+      - /root/media-shuttle-logs/tg.env
     depends_on:
       - api

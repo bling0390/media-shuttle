@@ -1,6 +1,6 @@
 from .bunkr import is_bunkr, is_bunkr_album, parse_bunkr, parse_bunkr_album_live, parse_bunkr_live
 from .coomer import is_coomer, parse_coomer
-from .cyberdrop import is_cyberdrop, is_cyberdrop_album, parse_cyberdrop, parse_cyberdrop_album_live
+from .cyberdrop import is_cyberdrop, is_cyberdrop_album, parse_cyberdrop, parse_cyberdrop_album_live, parse_cyberdrop_live
 from .cyberfile import is_cyberfile, parse_cyberfile
 from .filester import is_filester, parse_filester, parse_filester_live
 from .gd import is_gd, parse_gd
@@ -45,6 +45,7 @@ __all__ = [
     "parse_mega",
     "parse_mega_live",
     "parse_cyberdrop",
+    "parse_cyberdrop_live",
     "parse_cyberdrop_album_live",
     "parse_cyberfile",
     "parse_filester",

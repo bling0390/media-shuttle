@@ -1,0 +1,37 @@
+services:
+  api:
+    build:
+      context: ./media-shuttle-api
+    env_file:
+      - /root/media-shuttle-logs/core.env
+    environment:
+      MEDIA_SHUTTLE_REDIS_URL: redis://redis:6379/0
+      MEDIA_SHUTTLE_MONGO_URI: mongodb://mongo:27017
+      MEDIA_SHUTTLE_REDIS_PUBLISH_MODE: celery
+    depends_on:
+      - redis
+      - mongo
+    ports:
+      - "8000:8000"
+
+  core-worker:
+    build:
+      context: ./media-shuttle-core
+    env_file:
+      - /root/media-shuttle-logs/core.env
+    environment:
+      MEDIA_SHUTTLE_REDIS_URL: redis://redis:6379/0
+      MEDIA_SHUTTLE_MONGO_URI: mongodb://mongo:27017
+    depends_on:
+      - redis
+      - mongo
+    volumes:
+      # Mount rclone.conf so the worker can talk to 115 drive.
+      - /root/media-shuttle-logs/rclone.conf:/root/.config/rclone/rclone.conf:ro
+      # Writable stage + log dirs.
+      - core-stage:/tmp/media-shuttle-stage
+      - core-logs:/var/log/media-shuttle-core
+
+volumes:
+  core-stage:
+  core-logs:

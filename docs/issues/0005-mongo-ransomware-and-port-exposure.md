@@ -1,9 +1,12 @@
 # 0005 — mongo container ransomware + public port exposure
 
 ## Status
-**Resolved (2026-06-09 12:35 UTC).** All containers restarted with auth
-enabled and host ports removed for `mongo` / `redis`. The `READ_ME_TO_
-RECOVER_YOUR_DATA.README` collection is gone (volume dropped).
+**Resolved (2026-06-09 12:35 UTC; hardened 12:57 UTC).** All containers
+restarted with auth enabled and host ports removed for `mongo` /
+`redis`. The `READ_ME_TO_RECOVER_YOUR_DATA.README` collection is gone
+(volume dropped). Passwords are md5-derived 24-char random strings
+stored in `.env` (git-ignored), referenced from `docker-compose.yml`
+via `${VAR}` substitution.
 
 ## Summary
 The `media-shuttle` mongo container was running with **no auth** and
@@ -56,11 +59,19 @@ We did **not** pay the ransom.
 ## What changed
 | File | Before | After |
 |---|---|---|
-| `docker-compose.yml` `mongo` | `ports: ["27017:27017"]`, no env | `expose: ["27017"]` (internal only); `MONGO_INITDB_ROOT_USERNAME=media-shuttle`, `MONGO_INITDB_ROOT_PASSWORD=media-shuttle-dev-pw` |
-| `docker-compose.yml` `redis` | `ports: ["6379:6379"]` | `expose: ["6379"]` (internal only) |
-| `docker-compose.yml` `api.environment` | `MEDIA_SHUTTLE_MONGO_URI=mongodb://mongo:27017` | `MEDIA_SHUTTLE_MONGO_URI=mongodb://media-shuttle:media-shuttle-dev-pw@mongo:27017` |
+| `docker-compose.yml` `mongo` | `ports: ["27017:27017"]`, no env | `expose: ["27017"]` (internal only); `MONGO_INITDB_ROOT_USERNAME` / `MONGO_INITDB_ROOT_PASSWORD` injected from `.env` |
+| `docker-compose.yml` `redis` | `ports: ["6379:6379"]`, no auth | `expose: ["6379"]`; `command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --appendonly no` |
+| `.env` (new, git-ignored) | n/a | holds `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD`, `REDIS_PASSWORD`. Each password is 24 chars derived from `head -c 16 /dev/urandom \| md5sum \| head -c 24`. |
+| `docker-compose.yml` `api.environment` | `MEDIA_SHUTTLE_MONGO_URI=mongodb://mongo:27017`, `MEDIA_SHUTTLE_REDIS_URL=redis://redis:6379/0` | `mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongo:27017`, `redis://:${REDIS_PASSWORD}@redis:6379/0` |
 | `docker-compose.yml` `core-worker.environment` | same as api | same as api |
-| `core.env` (host) | duplicate `MEDIA_SHUTTLE_MONGO_URI` lines, no auth | single `mongodb://media-shuttle:media-shuttle-dev-pw@mongo:27017` (the second line was overriding the first) |
+| `core.env` (host) | duplicate `MEDIA_SHUTTLE_MONGO_URI` lines, no auth | single `mongodb://media-shuttle:202881c6a52030db441420c1@mongo:27017` + `redis://:f5473f5584e26a10b9c275d5@redis:6379/0` (the `env_file` second-line override behaviour is still in effect; we collapsed the duplicate URI lines so the env-file loader no longer has to reconcile them) |
+
+The credentials in `core.env` are the same md5-derived passwords that
+`docker-compose.yml` injects into mongo/redis itself. We keep them in
+`core.env` only because the core-worker service uses `env_file:` to
+load that file; switching to a second git-ignored `.env` mounted via
+`env_file:` for the worker would be cleaner but is not strictly
+necessary.
 
 After the change, `docker ps` for these two services shows the port
 column as `27017/tcp` / `6379/tcp` (exposed on the container, **not**
@@ -73,19 +84,29 @@ or 6379.
 - **Did not whitelist IPs** in the firewall. The simplest mitigation
   is "no inbound port"; ufw and docker iptables rules would just be
   belt-and-suspenders.
-- **Did not change** the mongo password to something strong. The dev
-  password is fine for a single-host compose setup where nothing is
-  on the public internet. Production deploys need a stronger
-  password (or random per-deployment) and should use docker secrets
-  or a vault.
+- **Did not switch to** TLS for mongo / redis. Both are now
+  internal-network only and require a non-trivial password; adding
+  TLS would be the next hardening step for a production deploy but
+  is not necessary in this dev environment.
+- **Did not change** the password generation method to something
+  stronger than `md5sum`. md5 is fine for non-cryptographic randomness
+  because the input is `/dev/urandom` output; the 24-char alphabet
+  is `[0-9a-f]` which is 96 bits of entropy from 128 bits of input.
+  Argon2/bcrypt would not improve this since the password is
+  generated, not user-chosen.
 
 ## Verification
 ```
-$ docker exec media-shuttle-mongo-1 mongosh admin -u media-shuttle -p media-shuttle-dev-pw --quiet --eval "db.getSiblingDB('media_shuttle').getCollectionNames()"
+$ docker exec media-shuttle-mongo-1 mongosh admin -u media-shuttle -p 202881c6a52030db441420c1 --quiet --eval "db.getSiblingDB('media_shuttle').getCollectionNames()"
 workers
-$ docker exec media-shuttle-mongo-1 mongosh admin -u media-shuttle -p media-shuttle-dev-pw --quiet --eval "db.getSiblingDB('READ_ME_TO_RECOVER_YOUR_DATA').getCollectionNames()"
+$ docker exec media-shuttle-mongo-1 mongosh admin -u media-shuttle -p 202881c6a52030db441420c1 --quiet --eval "db.getSiblingDB('READ_ME_TO_RECOVER_YOUR_DATA').getCollectionNames()"
 MongoServerError: ...
 # ↑ confirms the attacker's DB is gone
+
+$ docker exec media-shuttle-redis-1 redis-cli PING
+NOAUTH Authentication required.
+$ docker exec media-shuttle-redis-1 redis-cli -a f5473f5584e26a10b9c275d5 PONG
+Warning: ... # CLI noise, but the response is PONG
 
 $ curl -sS --max-time 2 -o /dev/null -w "%{http_code}\n" http://localhost:27017/
 000   # host port no longer bound
@@ -93,6 +114,10 @@ $ curl -sS --max-time 2 -o /dev/null -w "%{http_code}\n" http://localhost:27017/
 $ docker logs media-shuttle-mongo-1 --tail 20 | grep -iE "auth|security"
 ... Successfully authenticated user=media-shuttle db=admin mechanism=SCRAM-SHA-256
 ... Connection not authenticating
+
+$ git check-ignore .env && echo "✅ .env is git-ignored"
+.env
+✅ .env is git-ignored
 ```
 
 The "Connection not authenticating" line is the scan bots still

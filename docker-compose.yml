@@ -5,17 +5,29 @@ services:
     # the docker internal network. Avoid exposing 6379 publicly.
     expose:
       - "6379"
+    # Turn on auth so a misconfigured peer in the compose network cannot
+    # FLUSHALL our task queue. The password comes from .env (git-ignored).
+    # See docs/issues/0005 (post-ransomware hardening).
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+      - "--save"
+      - "60"
+      - "1"
+      - "--appendonly"
+      - "no"
 
   mongo:
     image: mongo:7
     # No host port: same reason. api / core-worker reach it via
     # mongodb://mongo:27017 inside the compose network only.
     environment:
-      # Turn on auth so a random public host that happens to share the
-      # same network namespace (or finds an open route in) cannot wipe
-      # collections. See docs/issues/0005 (post-ransomware hardening).
-      MONGO_INITDB_ROOT_USERNAME: media-shuttle
-      MONGO_INITDB_ROOT_PASSWORD: media-shuttle-dev-pw
+      # SCRAM-SHA-256 auth. The username and password come from .env
+      # (git-ignored) so the secret never lands in git. See
+      # docs/issues/0005 for why auth is now mandatory.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     expose:
       - "27017"
 
@@ -23,11 +35,11 @@ services:
     build:
       context: ./media-shuttle-api
     environment:
-      - MEDIA_SHUTTLE_REDIS_URL=redis://redis:6379/0
+      - MEDIA_SHUTTLE_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - MEDIA_SHUTTLE_STORAGE_BACKEND=mongo
       - MEDIA_SHUTTLE_QUEUE_BACKEND=redis
       - MEDIA_SHUTTLE_REDIS_PUBLISH_MODE=celery
-      - MEDIA_SHUTTLE_MONGO_URI=mongodb://media-shuttle:media-shuttle-dev-pw@mongo:27017
+      - MEDIA_SHUTTLE_MONGO_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongo:27017
     depends_on:
       - redis
       - mongo
@@ -40,10 +52,10 @@ services:
     env_file:
       - /root/media-shuttle-logs/core.env
     environment:
-      - MEDIA_SHUTTLE_REDIS_URL=redis://redis:6379/0
+      - MEDIA_SHUTTLE_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - MEDIA_SHUTTLE_STORAGE_BACKEND=mongo
       - MEDIA_SHUTTLE_QUEUE_BACKEND=redis
-      - MEDIA_SHUTTLE_MONGO_URI=mongodb://media-shuttle:media-shuttle-dev-pw@mongo:27017
+      - MEDIA_SHUTTLE_MONGO_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongo:27017
       - MEDIA_SHUTTLE_MAX_RETRIES=2
       - MEDIA_SHUTTLE_CORE_CONCURRENCY=3
       - MEDIA_SHUTTLE_RETRY_QUEUE_KEY=media_shuttle:task_retry

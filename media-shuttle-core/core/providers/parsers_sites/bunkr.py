@@ -59,10 +59,64 @@ def parse_bunkr_album_live(url: str) -> list[ParsedSource]:
 
 
 def _parse_bunkr_album_page(url: str, html: str, folder_name: str) -> list[ParsedSource]:
+    """Resolve every child /f/<slug> link to a real CDN URL.
+
+    The album page lists its files as ``/f/<slug>`` pages (each one is
+    itself a bunkr page that hides the real CDN URL behind the
+    /api/_001_v2 + glb-apisign flow). If we hand the downloader the bare
+    ``/f/<slug>`` URL it will try to "find a .mp4 in the page" and pick
+    the thumbnail image, downloading a tiny preview instead of the
+    actual file. Pre-resolving every link keeps the downloader honest.
+    """
     links = _bunkr_collect_media_links(url, html, max_depth=1)
     if not links:
         return []
-    return [_bunkr_source(page_url=link, download_url=link, remote_folder=folder_name, file_name="") for link in links]
+
+    results: list[ParsedSource] = []
+    for link in links:
+        try:
+            child_html = http_text(link, headers=_bunkr_headers(referer=url))
+        except Exception:
+            # If a single child fails (404, network, anti-bot) we still
+            # emit a source pointing at the page URL so it surfaces as a
+            # structured failure rather than silently disappearing.
+            results.append(
+                _bunkr_source(
+                    page_url=link,
+                    download_url=link,
+                    remote_folder=folder_name,
+                    file_name="",
+                )
+            )
+            continue
+
+        direct = _bunkr_resolve_single_file_download_url(link, child_html)
+        if not direct:
+            results.append(
+                _bunkr_source(
+                    page_url=link,
+                    download_url=link,
+                    remote_folder=folder_name,
+                    file_name="",
+                )
+            )
+            continue
+
+        child_title = _bunkr_folder_name(child_html, fallback=folder_name)
+        # Title typically has ".mp4" (or other ext) on the end; strip it
+        # to use as a per-file sub-folder. Falling back to album folder
+        # keeps things grouped if the title is missing.
+        child_folder = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", child_title).strip() or folder_name
+        child_file = _bunkr_file_name(child_html, fallback=child_title)
+        results.append(
+            _bunkr_source(
+                page_url=link,
+                download_url=direct,
+                remote_folder=child_folder,
+                file_name=child_file,
+            )
+        )
+    return results
 
 
 def _parse_bunkr_single_page(url: str, html: str, folder_name: str) -> list[ParsedSource]:

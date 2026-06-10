@@ -8,13 +8,26 @@ from ...enums import SourceSite
 from ...models import ParsedSource
 from .common import guess_filename_from_path, host, http_json, http_text, safe_name, segments
 
+# Filester aliases the same backend under several landing TLDs
+# (``.me`` is the original; ``.sh`` is the mirror that survives
+# the most regional blocks). New mirrors keep getting added; the
+# matcher below accepts any ``filester.<tld>`` so future aliases
+# Just Work without a code change. The API origin still defaults
+# to ``.me`` (the canonical host); override
+# ``MEDIA_SHUTTLE_FILESTER_ORIGIN`` for an isolated deployment.
+_FILESTER_KNOWN_TLDS = ("me", "sh")
 _FILESTER_ORIGIN = os.getenv("MEDIA_SHUTTLE_FILESTER_ORIGIN", "https://filester.me").rstrip("/")
 _FILESTER_CDN_ORIGIN = os.getenv("MEDIA_SHUTTLE_FILESTER_CDN_ORIGIN", "https://cache1.filester.me").rstrip("/")
 
 
 def is_filester(url: str) -> bool:
     hostname = host(url)
-    return hostname == "filester.me" or hostname.endswith(".filester.me")
+    if not hostname:
+        return False
+    return any(
+        hostname == f"filester.{tld}" or hostname.endswith(f".filester.{tld}")
+        for tld in _FILESTER_KNOWN_TLDS
+    )
 
 
 def parse_filester(url: str) -> list[ParsedSource]:

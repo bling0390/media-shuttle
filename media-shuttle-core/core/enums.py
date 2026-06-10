@@ -30,6 +30,7 @@ class SourceSite(str, Enum):
     TURBO = "TURBO"
     COOMER = "COOMER"
     YTDL = "YTDL"
+    FILEDITCHFILES = "FILEDITCHFILES"
     GENERIC = "GENERIC"
 
 
@@ -49,5 +50,6 @@ def default_site_queue_suffixes() -> list[str]:
         SourceSite.TURBO.value,
         SourceSite.COOMER.value,
         SourceSite.YTDL.value,
+        SourceSite.FILEDITCHFILES.value,
         SourceSite.GENERIC.value,
     ]

@@ -13,6 +13,7 @@ from .coomer import download_coomer_live
 from .cyberdrop import download_cyberdrop_live
 from .cyberfile import download_cyberfile_live
 from .filester import download_filester_live
+from .fileditchfiles import download_fileditchfiles_live
 from .gd import download_gd_live
 from .gofile import download_gofile_live
 from .mediafire import download_mediafire_live
@@ -37,6 +38,7 @@ __all__ = [
     "download_cyberdrop_live",
     "download_cyberfile_live",
     "download_filester_live",
+    "download_fileditchfiles_live",
     "download_mediafire_live",
     "download_mega_live",
     "download_pixeldrain_live",

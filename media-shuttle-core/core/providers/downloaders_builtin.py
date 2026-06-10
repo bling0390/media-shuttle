@@ -7,6 +7,7 @@ from .downloaders_sites import (
     download_cyberdrop_live,
     download_cyberfile_live,
     download_filester_live,
+    download_fileditchfiles_live,
     download_gd_live,
     download_gofile_live,
     download_live_generic,
@@ -53,6 +54,12 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
                     "live",
                     lambda source: source.site == SourceSite.FILESTER.value,
                     download_filester_live,
+                ),
+                DownloadProvider(
+                    "fileditchfiles_live",
+                    "live",
+                    lambda source: source.site == SourceSite.FILEDITCHFILES.value,
+                    download_fileditchfiles_live,
                 ),
                 DownloadProvider(
                     "pixeldrain_live",
@@ -104,6 +111,9 @@ def builtin_download_providers(mode: str) -> list[DownloadProvider]:
             ),
             DownloadProvider(
                 "filester_mock", "mock", lambda source: source.site == SourceSite.FILESTER.value, download_mock
+            ),
+            DownloadProvider(
+                "fileditchfiles_mock", "mock", lambda source: source.site == SourceSite.FILEDITCHFILES.value, download_mock
             ),
             DownloadProvider(
                 "pixeldrain_mock", "mock", lambda source: source.site == SourceSite.PIXELDRAIN.value, download_mock

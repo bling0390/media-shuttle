@@ -3,6 +3,7 @@ from .coomer import is_coomer, parse_coomer
 from .cyberdrop import is_cyberdrop, is_cyberdrop_album, parse_cyberdrop, parse_cyberdrop_album_live, parse_cyberdrop_live
 from .cyberfile import is_cyberfile, parse_cyberfile
 from .filester import is_filester, parse_filester, parse_filester_live
+from .fileditchfiles import is_fileditchfiles, parse_fileditchfiles, parse_fileditchfiles_live
 from .gd import is_gd, parse_gd
 from .generic import is_direct_file, parse_generic
 from .gofile import is_gofile, parse_gofile, parse_gofile_live
@@ -26,6 +27,7 @@ __all__ = [
     "is_cyberdrop_album",
     "is_cyberfile",
     "is_filester",
+    "is_fileditchfiles",
     "is_saint",
     "is_transfer",
     "is_turbo",
@@ -50,6 +52,8 @@ __all__ = [
     "parse_cyberfile",
     "parse_filester",
     "parse_filester_live",
+    "parse_fileditchfiles",
+    "parse_fileditchfiles_live",
     "parse_saint",
     "parse_transfer",
     "parse_transfer_live",

@@ -59,3 +59,21 @@ class ApiClient:
 
     def admin_setting(self, key: str, value: str) -> dict:
         return self._request("POST", "/v1/admin/settings", body={"key": key, "value": value})
+
+    def cleanup_downloads(self, dry_run: bool = False) -> dict:
+        """Wipe the local download directory via the api.
+
+        ``dry_run=True`` previews what would be removed (size
+        and path of every direct child of
+        ``MEDIA_SHUTTLE_DOWNLOAD_DIR``) without deleting
+        anything. ``dry_run=False`` actually removes the
+        files. The api enforces a per-candidate path-safety
+        check (every path must resolve inside the configured
+        download root) so this call can never reach outside
+        the worker's working area.
+        """
+        return self._request(
+            "POST",
+            "/v1/admin/cleanup-downloads",
+            body={"dry_run": bool(dry_run)},
+        )

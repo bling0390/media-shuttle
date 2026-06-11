@@ -396,6 +396,24 @@ class ApiService:
     def admin_setting_action(self, key: str, value: str) -> dict:
         return {"key": key, "value": value, "accepted": True}
 
+    def admin_cleanup_downloads_action(self, dry_run: bool = False) -> dict:
+        """Manually wipe the local download directory.
+
+        Backs the ``/leech cleanup`` Telegram command. The
+        underlying sweep is implemented in
+        ``app.cleanup.sweep_download_dir`` so it lives in the
+        api image (which is the container that receives the
+        ``POST /v1/admin/cleanup-downloads`` request) and does
+        not require the ``core`` package to be installed
+        inside the api process. Path safety mirrors
+        ``core.utils.cleanup_local_download``: every candidate
+        is checked against the resolved download root before
+        removal, so the call can never reach outside
+        ``MEDIA_SHUTTLE_DOWNLOAD_DIR``.
+        """
+        from .cleanup import sweep_download_dir
+        return {"accepted": True, **sweep_download_dir(dry_run=bool(dry_run))}
+
 
 def _resolve_task_name(task_type: str) -> str:
     mapping = {

@@ -120,3 +120,21 @@ def admin_retry(body: dict):
 @app.post("/v1/admin/settings")
 def admin_settings(body: dict):
     return container.service.admin_setting_action(key=body.get("key", ""), value=body.get("value", ""))
+
+
+@app.post("/v1/admin/cleanup-downloads")
+def admin_cleanup_downloads(body: dict | None = None):
+    """Manually wipe the local download directory.
+
+    Backed by ``sweep_download_dir`` which only touches paths
+    inside the resolved ``MEDIA_SHUTTLE_DOWNLOAD_DIR``. Use
+    ``{"dry_run": true}`` to preview what would be removed
+    without actually deleting anything.
+    """
+    payload = body or {}
+    dry_run_raw = payload.get("dry_run", False)
+    if isinstance(dry_run_raw, str):
+        dry_run = dry_run_raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        dry_run = bool(dry_run_raw)
+    return container.service.admin_cleanup_downloads_action(dry_run=dry_run)

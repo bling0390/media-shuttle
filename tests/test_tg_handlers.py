@@ -35,6 +35,19 @@ class FakeApiClient:
         self.calls.append(("admin_setting", kwargs))
         return {"accepted": True}
 
+    def cleanup_downloads(self, **kwargs):
+        self.calls.append(("cleanup_downloads", kwargs))
+        return {
+            "accepted": True,
+            "root": "/tmp/media-shuttle",
+            "dry_run": kwargs.get("dry_run", False),
+            "scanned": 1,
+            "removed": 1 if not kwargs.get("dry_run") else 0,
+            "skipped": 0,
+            "freed_bytes": 12345 if not kwargs.get("dry_run") else 0,
+            "items": [],
+        }
+
 
 class TestTgHandlers(unittest.TestCase):
     def test_handlers_use_api_only(self):
@@ -48,6 +61,8 @@ class TestTgHandlers(unittest.TestCase):
         handlers.on_rate_command("w1", "download", "1/s")
         handlers.on_retry_command("both")
         handlers.on_setting_command("upload.tool", "RCLONE")
+        handlers.on_cleanup_command(dry_run=False)
+        handlers.on_cleanup_command(dry_run=True)
 
         call_names = [name for name, _ in api.calls]
         self.assertEqual(
@@ -59,7 +74,35 @@ class TestTgHandlers(unittest.TestCase):
                 "admin_rate_limit",
                 "admin_retry",
                 "admin_setting",
+                "cleanup_downloads",
+                "cleanup_downloads",
             ],
+        )
+
+    def test_cleanup_dry_vs_real(self):
+        from tg.handlers import format_cleanup_reply
+
+        api = FakeApiClient()
+        handlers = TgHandlers(api)
+
+        real = handlers.on_cleanup_command(dry_run=False)
+        self.assertEqual(api.calls[-1], ("cleanup_downloads", {"dry_run": False}))
+        self.assertIn("CLEANUP", format_cleanup_reply(real))
+        self.assertNotIn("DRY-RUN", format_cleanup_reply(real))
+
+        preview = handlers.on_cleanup_command(dry_run=True)
+        self.assertEqual(api.calls[-1], ("cleanup_downloads", {"dry_run": True}))
+        rendered = format_cleanup_reply(preview)
+        self.assertIn("DRY-RUN", rendered)
+        self.assertIn("freed=0 B", rendered)
+
+    def test_cleanup_failure_renders(self):
+        from tg.handlers import format_cleanup_reply
+
+        self.assertIn("cleanup failed", format_cleanup_reply(None))
+        self.assertIn(
+            "sweep_unavailable",
+            format_cleanup_reply({"accepted": False, "reason": "sweep_unavailable"}),
         )
 
 

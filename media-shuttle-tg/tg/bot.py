@@ -32,9 +32,30 @@ def run_bot() -> None:
     async def leech_command(_, message):
         args = message.text.split()
         if len(args) < 2:
-            await message.reply("Usage: /leech <url>")
+            await message.reply(
+                "Usage:\n"
+                "  /leech <url> [destination]\n"
+                "  /leech cleanup [dry]"
+            )
             return
-        url = args[1]
+
+        sub = args[1].lower()
+
+        # ``/leech cleanup`` (and ``/leech cleanup dry``) wipe
+        # ``MEDIA_SHUTTLE_DOWNLOAD_DIR`` through the api. The
+        # ``dry`` flag previews what would be removed without
+        # actually deleting anything. Path safety is enforced
+        # server-side in ``app.cleanup.sweep_download_dir`` so
+        # every candidate is checked against the resolved
+        # download root before removal.
+        if sub == "cleanup":
+            dry = len(args) >= 3 and args[2].lower() in {"dry", "dry-run", "preview"}
+            result = handlers.on_cleanup_command(dry_run=dry)
+            from .handlers import format_cleanup_reply
+            await message.reply(format_cleanup_reply(result))
+            return
+
+        url = sub
         # destination is omitted: api defaults it to ``115:/`` so the
         # final upload path is ``115:/<date>/<folder>/<file>``. Callers
         # that need a custom subpath can add it as the second arg:

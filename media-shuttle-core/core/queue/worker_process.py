@@ -6,6 +6,7 @@ import signal
 import socket
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from ..enums import default_site_queue_suffixes
@@ -288,6 +289,46 @@ def _terminate_workers(procs: list[subprocess.Popen]) -> None:
         proc.kill()
 
 
+def _sweep_orphaned_downloads() -> int:
+    """Best-effort: remove any ``tmp.part`` left behind by a previous
+    worker process that died mid-download (OOM kill, SIGKILL,
+    power loss, manual ``docker restart``). A fresh supervisor
+    boot is the right place to do this — there is no in-flight
+    Celery task to be racing, and every orphan is hard-disk
+    pressure waiting to happen on a long-running host.
+
+    The sweep only touches files inside the configured download
+    root (``MEDIA_SHUTTLE_DOWNLOAD_DIR``) so it can never reach
+    outside the worker's working area.
+    """
+    from ..utils import cleanup_local_download
+
+    download_root = Path(
+        os.getenv("MEDIA_SHUTTLE_DOWNLOAD_DIR", "/tmp/media-shuttle")
+    )
+    if not download_root.is_dir():
+        return 0
+    try:
+        root_resolved = download_root.resolve()
+    except Exception:
+        return 0
+    removed = 0
+    for child in sorted(download_root.iterdir(), reverse=True):
+        if not child.is_dir():
+            continue
+        try:
+            child.resolve().relative_to(root_resolved)
+        except Exception:
+            continue
+        if cleanup_local_download(str(child)):
+            removed += 1
+    if removed:
+        logger.info(
+            f"download orphan sweep removed={removed} root={download_root}"
+        )
+    return removed
+
+
 def _wait_for_any_exit(procs: list[subprocess.Popen], on_tick=None) -> tuple[subprocess.Popen, int]:
     if len(procs) == 1:
         code = procs[0].wait()
@@ -318,6 +359,9 @@ def run_forever() -> int:
     roles = _resolve_roles()
     registry = _build_worker_registry()
     logger.info(f"core supervisor boot roles={','.join(roles)}")
+    # Sweep any partial downloads left behind by a previous
+    # worker (OOM kill, SIGKILL, etc.) before we start new ones.
+    _sweep_orphaned_downloads()
     slots = [_worker_slot(role) for role in roles]
     procs: list[subprocess.Popen] = []
     for slot in slots:

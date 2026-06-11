@@ -418,6 +418,19 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
         service.repository.update_status(task_id, TaskStatus.FAILED, reason)
         service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error=reason)
         logger.error(f"task finalize failed task_id={task_id} reason={reason}")
+        # If the task is going to be retried, keep the local file
+        # around — the next attempt will re-upload it cheaply. If
+        # it's past the retry budget, the file is dead weight and
+        # cleanup immediately so /tmp/media-shuttle does not fill
+        # up on a long-running host. We pull the max-retries
+        # budget the same way ``_route_failure`` does.
+        attempt = int(event.get("attempt", 0))
+        if attempt >= _max_retries():
+            for item in upload_results:
+                dl = (item or {}).get("download") or {}
+                local_path = dl.get("local_path")
+                if local_path:
+                    cleanup_local_download(local_path)
         return _route_failure(event, reason, task_id=task_id, app=app)
 
     locations = [item["location"] for item in upload_results if item.get("location")]

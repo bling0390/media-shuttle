@@ -40,6 +40,38 @@ def _created_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_CREATED_QUEUE_KEY", "media_shuttle:task_created")
 
 
+def _notification_queue_key() -> str:
+    return os.getenv("MEDIA_SHUTTLE_NOTIFICATION_QUEUE_KEY", "media_shuttle:event_task_completed")
+
+
+def _publish_task_completed_event(payload: dict[str, Any]) -> None:
+    """Push a ``task.completed`` event to the notification queue.
+
+    This is best-effort: the task is already ``SUCCEEDED`` in mongo
+    by the time we get here, so a publish failure must not roll
+    the finalize back. The downstream subscriber (currently the
+    telegram bot) is the only consumer and is expected to be
+    idempotent — redelivery after a crash replays the message
+    but the user only sees a duplicate notification, never a
+    missing one.
+    """
+    import json
+    import redis
+    try:
+        client = redis.Redis.from_url(_redis_url())
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"notification publish skipped: redis init failed reason={exc}")
+        return
+    try:
+        client.rpush(_notification_queue_key(), json.dumps(payload))
+    except Exception as exc:
+        logger.warning(f"notification publish failed task_id={payload.get('task_id')} reason={exc}")
+
+
+def _redis_url() -> str:
+    return os.getenv("MEDIA_SHUTTLE_REDIS_URL", "redis://localhost:6379/0")
+
+
 def _retry_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_RETRY_QUEUE_KEY", "media_shuttle:task_retry")
 
@@ -438,6 +470,33 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
     service.repository.update_status(task_id, TaskStatus.SUCCEEDED, message=message)
     service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error="")
     logger.info(f"task finalize succeeded task_id={task_id} result_count={len(locations)}")
+
+    # Best-effort notification fan-out. The task is already
+    # terminal in mongo; we just hand the (file_name, size, target
+    # chat) to whatever subscriber is listening. Failures are
+    # logged and dropped.
+    first = next((item for item in upload_results if item.get("ok")), None) or {}
+    download = first.get("download") or {}
+    task_doc = service.repository.get(task_id)
+    requester_id = str(getattr(task_doc, "requester_id", "") or "") if task_doc else ""
+    file_name = str(download.get("file_name") or "")
+    size_bytes = int(download.get("size_bytes") or 0)
+    if requester_id and file_name:
+        _publish_task_completed_event(
+            {
+                "task_id": task_id,
+                "requester_id": requester_id,
+                "file_name": file_name,
+                "size_bytes": size_bytes,
+                "location": locations[0] if locations else "",
+                "spec_version": "task.completed.v1",
+            }
+        )
+    else:
+        logger.info(
+            f"notification skipped task_id={task_id} requester_id={requester_id!r} file_name={file_name!r}"
+        )
+
     return {
         "state": "succeeded",
         "task_id": task_id,

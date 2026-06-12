@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from .api_client import ApiClient
 from .handlers import TgHandlers
 from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_API_ID, TELEGRAM_API_HASH
@@ -27,6 +29,12 @@ def run_bot() -> None:
         api_id=TELEGRAM_API_ID,
         api_hash=TELEGRAM_API_HASH,
     )
+
+    # Spin up the task-completion notifier once the bot is
+    # actually running. We start it from inside a ``when_ready``
+    # hook (registered below) so the pyrogram event loop is
+    # already live when the notifier hands coroutines to it.
+    notifier_holder: dict = {}
 
     @app.on_message(filters.command("leech") & filters.private)
     async def leech_command(_, message):
@@ -73,6 +81,25 @@ def run_bot() -> None:
     async def monitor_command(_, message):
         stat = handlers.on_monitor_command()
         await message.reply(str(stat))
+
+    # Boot the task-completion notifier. ``app.run`` blocks; the
+    # daemon thread exits when the process dies.
+    try:
+        from .notifier import TaskCompletedNotifier
+
+        async def _start_notifier() -> None:
+            loop = asyncio.get_running_loop()
+            notifier = TaskCompletedNotifier(app, loop)
+            notifier_holder["notifier"] = notifier
+            notifier.start()
+
+        app.loop.create_task(_start_notifier())
+    except Exception as exc:  # pragma: no cover
+        # Notifier is best-effort: bot still works for /leech.
+        import logging
+        logging.getLogger("media_shuttle.tg").warning(
+            f"task notifier failed to start, /leech still works: {exc}"
+        )
 
     app.run()
 

@@ -90,7 +90,7 @@ def http_json(
         url=url,
         headers=with_random_user_agent(headers),
         json=body,
-        timeout=20.0,
+        timeout=60.0,
         follow_redirects=True,
     )
     payload = response.text
@@ -107,7 +107,7 @@ def http_text(url: str, headers: dict[str, str] | None = None, method: str = "GE
         method=method,
         url=url,
         headers=with_random_user_agent(headers),
-        timeout=20.0,
+        timeout=60.0,
         follow_redirects=True,
     )
     response.raise_for_status()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -88,9 +89,60 @@ class GofileListSourcesFileTests(unittest.TestCase):
         self.assertIn("/contents/CgT9zm", mock_http.call_args[0][0])
         headers = mock_http.call_args.kwargs.get("headers", {})
         self.assertEqual(headers.get("Authorization"), "Bearer xyz")
-        # v2 must NOT include the v1 X-Website-Token / X-BL defenses.
+        # Without the env var, X-Website-Token must NOT be sent.
+        # With it, it must. Both paths are exercised in
+        # dedicated tests below.
         self.assertNotIn("X-Website-Token", headers)
-        self.assertNotIn("X-BL", headers)
+
+    def test_sends_website_token_when_env_set(self) -> None:
+        # Regression for the 2026-06 gofile change: the
+        # web client sends a static ``X-Website-Token``
+        # header on every API call. Without it the server
+        # returns ``error-notPremium`` (HTTP 401) for
+        # content the same account can read in a regular
+        # browser tab. We capture the token from the
+        # browser's curl and forward it.
+        with patch.dict("os.environ", {
+            "MEDIA_SHUTTLE_GOFILE_WEBSITE_TOKEN":
+                "a422dbb2c5f63da5e8fb4880f2b0d71afc"
+        }), patch.object(gofile, "http_json", return_value={
+            "status": "ok",
+            "data": {
+                "id": "CgT9zm",
+                "type": "file",
+                "name": "video.mp4",
+                "link": "https://store-eu-1.gofile.io/download/web/CgT9zm/video.mp4",
+            },
+        }) as mock_http:
+            _gofile_list_sources("CgT9zm", token="xyz")
+        headers = mock_http.call_args.kwargs.get("headers", {})
+        self.assertEqual(
+            headers.get("X-Website-Token"),
+            "a422dbb2c5f63da5e8fb4880f2b0d71afc",
+        )
+
+    def test_omits_website_token_when_env_unset(self) -> None:
+        # When the env var is empty/absent we must NOT
+        # send an empty ``X-Website-Token: ''`` header;
+        # older deployments without the variable keep
+        # working in the (rare) case gofile accepts a
+        # no-website-token request.
+        with patch.dict("os.environ", {}, clear=False), \
+             patch.object(gofile, "http_json", return_value={
+                 "status": "ok",
+                 "data": {
+                     "id": "CgT9zm",
+                     "type": "file",
+                     "name": "video.mp4",
+                     "link": "https://store-eu-1.gofile.io/download/web/x",
+                 },
+             }) as mock_http:
+            # Make sure we don't inherit the env from a
+            # neighbouring test.
+            os.environ.pop("MEDIA_SHUTTLE_GOFILE_WEBSITE_TOKEN", None)
+            _gofile_list_sources("CgT9zm", token="xyz")
+        headers = mock_http.call_args.kwargs.get("headers", {})
+        self.assertNotIn("X-Website-Token", headers)
 
     def test_non_ok_response_returns_empty(self) -> None:
         with patch.object(gofile, "http_json", return_value={"status": "error", "data": {}}):

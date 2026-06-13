@@ -108,6 +108,26 @@ def _gofile_get_token() -> str:
     return token
 
 
+def _gofile_website_token() -> str:
+    """Optional but recommended: ``X-Website-Token`` header.
+
+    Gofile's web client (the React SPA at gofile.io) sends a
+    long-lived static token in the ``X-Website-Token`` request
+    header on every API call. Without it the server may treat
+    the request as a headless / non-browser client and respond
+    with ``error-notPremium`` (HTTP 401) for content the same
+    account can read in a regular tab. Captured from a browser
+    session; rotate alongside the bearer token if gofile ever
+    invalidates it.
+
+    We read it from ``MEDIA_SHUTTLE_GOFILE_WEBSITE_TOKEN`` and
+    send it only when set so older deployments without the
+    variable keep working in the (rare) case the upstream
+    accepts a no-website-token request.
+    """
+    return os.getenv("MEDIA_SHUTTLE_GOFILE_WEBSITE_TOKEN", "").strip()
+
+
 def _gofile_list_sources(content_id: str, token: str, password: str | None = None) -> list[ParsedSource]:
     """Walk a gofile content tree and return one ParsedSource per file.
 
@@ -117,13 +137,15 @@ def _gofile_list_sources(content_id: str, token: str, password: str | None = Non
     downloader via metadata so it can set the accountToken cookie on the
     request to the CDN host.
     """
-    request_headers = with_random_user_agent(
-        {
-            "Accept": "*/*",
-            "Connection": "keep-alive",
-            "Authorization": f"Bearer {token}",
-        }
-    )
+    headers: dict[str, str] = {
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Authorization": f"Bearer {token}",
+    }
+    website_token = _gofile_website_token()
+    if website_token:
+        headers["X-Website-Token"] = website_token
+    request_headers = with_random_user_agent(headers)
 
     params: dict[str, str] = {"cache": "true"}
     if password:

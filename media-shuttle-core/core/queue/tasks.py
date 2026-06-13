@@ -696,6 +696,24 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
     requester_id = str(getattr(task_doc, "requester_id", "") or "") if task_doc else ""
     file_name = str(download.get("file_name") or "")
     size_bytes = int(download.get("size_bytes") or 0)
+    source_site = str(download.get("site") or "")
+    # ``duration_seconds`` is the wall-clock time from the
+    # event's ``created_at`` to the finalize moment, falling
+    # back to 0 if the timestamp cannot be parsed (e.g. an
+    # event that came in via redis without a created_at).
+    duration_seconds = 0
+    try:
+        if event.get("created_at"):
+            from datetime import datetime, timezone
+            started = datetime.fromisoformat(
+                str(event["created_at"]).replace("Z", "+00:00")
+            )
+            duration_seconds = max(
+                0,
+                int((datetime.now(timezone.utc) - started).total_seconds()),
+            )
+    except Exception:
+        duration_seconds = 0
     if requester_id and file_name:
         _publish_task_completed_event(
             {
@@ -704,6 +722,8 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
                 "file_name": file_name,
                 "size_bytes": size_bytes,
                 "location": locations[0] if locations else "",
+                "source_site": source_site,
+                "duration_seconds": duration_seconds,
                 "spec_version": "task.completed.v1",
             }
         )

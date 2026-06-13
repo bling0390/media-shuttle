@@ -77,20 +77,165 @@ def _format_bytes(n: int) -> str:
     return f"{value:.1f} {units[idx]}"
 
 
+def _format_duration(seconds: int) -> str:
+    """Render a duration in seconds as a short human string.
+
+    Examples: 5 -> ``5s``; 75 -> ``1m15s``; 3725 -> ``1h2m5s``.
+    Returns ``""`` for non-positive values so the caller can
+    drop the line entirely.
+    """
+    if seconds <= 0:
+        return ""
+    hours, rem = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes}m{secs}s"
+    if minutes:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
+def _truncate(s: str, max_len: int) -> str:
+    """Clamp a string to ``max_len`` characters, ellipsizing the tail.
+
+    The downstream ``<pre>`` block in the box layout relies
+    on a consistent column width; an untruncated filename
+    blows the right margin. Truncation is character-based
+    (not bytes) to behave sanely for non-ASCII names.
+    """
+    if len(s) <= max_len:
+        return s
+    if max_len <= 1:
+        return s[:max_len]
+    return s[: max_len - 1] + "…"
+
+
 def _format_notification(event: dict[str, Any]) -> str:
-    """Render the event into a short telegram message.
+    """Render a task.completed event into a Telegram message.
 
-    Layout (per the operator's request, kept minimal):
+    Three styles are supported, picked by the env var
+    ``TG_NOTIFY_STYLE`` (default ``box``):
 
-        <file_name> — <size>
+    * ``box`` (default) — monospace box with key / value
+      columns. Best for at-a-glance scanning of long
+      filenames and sizes. Uses ``parse_mode=html`` on
+      the tg side so the box renders as a fixed-width
+      block; falls back to plain text if the renderer
+      strips HTML.
+    * ``kv`` — list of ``key: value`` lines, no box
+      border. Slightly more compact; reads well in any
+      client.
+    * ``inline`` — the original ``<name> — <size>`` form,
+      kept for operators that prefer one-liner notifications.
 
-    Future-proofed: if the spec grows to include more fields
-    (duration, source site, target drive), they slot in here
-    without touching the subscriber.
+    All three styles share the same field set so the
+    payload contract is unchanged: the operator can
+    switch styles per-deployment without touching the
+    core / api layer.
     """
     name = str(event.get("file_name") or "(unknown)")
     size = int(event.get("size_bytes") or 0)
-    return f"{name} — {_format_bytes(size)}"
+    source = str(event.get("source_site") or "")
+    location = str(event.get("location") or "")
+    duration = _format_duration(int(event.get("duration_seconds") or 0))
+
+    style = os.getenv("TG_NOTIFY_STYLE", "box").strip().lower()
+    if style == "inline":
+        return f"{name} — {_format_bytes(size)}"
+    if style == "kv":
+        return _format_kv(name, size, source, location, duration)
+    return _format_box(name, size, source, location, duration)
+
+
+def _format_kv(
+    name: str, size: int, source: str, location: str, duration: str
+) -> str:
+    """``key: value`` per line. No border.
+
+    Example::
+
+        状态：上传成功
+        文件名：Hegre_Serena_L_-_Sci-Fi_Cosmic_Climax_Massage_4K.mp4
+        文件大小：4.2 GiB
+        耗时：1m12s
+    """
+    lines = [
+        "状态：上传成功",
+        f"文件名：{name}",
+        f"文件大小：{_format_bytes(size)}",
+    ]
+    if source:
+        lines.append(f"来源：{source}")
+    if location:
+        lines.append(f"位置：{location}")
+    if duration:
+        lines.append(f"耗时：{duration}")
+    return "\n".join(lines)
+
+
+def _format_box(
+    name: str, size: int, source: str, location: str, duration: str
+) -> str:
+    """Monospace box layout, sent as a ``<pre>`` block.
+
+    The widths are picked so the box reads as a table
+    inside the ``<pre>`` rendering. Telegram renders
+    ``<pre>`` as a fixed-width block, so columns line up
+    even with non-ASCII characters (with the usual
+    CJK-width caveat).
+
+    Example::
+
+        ┌──────────────────────────────┐
+        │  ✅ 状态  上传成功            │
+        ├──────────────────────────────┤
+        │  文件名  Hegre_Serena_L...   │
+        │  大小    4.2 GiB             │
+        │  来源    bunkrr.su           │
+        │  位置    rclone://115:/...   │
+        │  耗时    1m12s               │
+        └──────────────────────────────┘
+    """
+    rows: list[tuple[str, str]] = [("状态", "✓ 上传成功")]
+    # Truncate filename to keep the box readable. 36 chars
+    # is the sweet spot for a typical phone screen.
+    rows.append(("文件名", _truncate(name, 36)))
+    rows.append(("大小", _format_bytes(size)))
+    if source:
+        rows.append(("来源", source))
+    if location:
+        rows.append(("位置", _truncate(location, 36)))
+    if duration:
+        rows.append(("耗时", duration))
+
+    label_width = max(len(label) for label, _ in rows)
+    value_width = max(len(value) for _, value in rows)
+    # The interior of a row is ``│  <label>  <value>  │`` —
+    # 2 leading spaces + label + 2 inner spaces + value +
+    # 2 trailing spaces. Total interior width must match
+    # the row's interior so the left/right border line up.
+    interior = 2 + label_width + 2 + value_width + 2
+    border_top = "┌" + "─" * interior + "┐"
+    border_mid = "├" + "─" * interior + "┤"
+    border_bot = "└" + "─" * interior + "┘"
+
+    out: list[str] = [border_top]
+    for idx, (label, value) in enumerate(rows):
+        line = f"│  {label.ljust(label_width)}  {value.ljust(value_width)}  │"
+        if idx == 1:
+            # Visual separator after the status line so the
+            # status reads as a header.
+            out.append(border_mid)
+        out.append(line)
+    out.append(border_bot)
+    body = "\n".join(out)
+    # ``<pre>`` forces monospace in tg so the box columns
+    # actually line up. ``<code>`` would also work but
+    # ``<pre>`` is the more common pattern for pre-formatted
+    # text. We escape HTML special chars in the body just
+    # in case a future filename contains one (most don't).
+    escaped = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<pre>{escaped}</pre>"
 
 
 class TaskCompletedNotifier:
@@ -179,6 +324,13 @@ class TaskCompletedNotifier:
             logger.warning(f"notifier dropping event with non-numeric requester_id={requester_id!r}")
             return
         text = _format_notification(event)
+        # Box layout wraps the body in a ``<pre>`` block so
+        # columns line up. Other layouts are plain text.
+        # Falling back from HTML to plain text on a render
+        # error would silently produce ugly output, so we
+        # detect the box style once and pick ``parse_mode``
+        # accordingly.
+        parse_mode = "html" if text.lstrip().startswith("<pre>") else None
         try:
             # pyrogram 2.0.x exposes ``send_message`` as a sync
             # wrapper that internally drives its own event loop.
@@ -188,7 +340,10 @@ class TaskCompletedNotifier:
             # itself is the coroutine-under-the-hood and is what
             # the wrapper awaits, so this is the documented path.
             async def _send() -> None:
-                await self._app.send_message(chat_id, text)
+                if parse_mode is not None:
+                    await self._app.send_message(chat_id, text, parse_mode=parse_mode)
+                else:
+                    await self._app.send_message(chat_id, text)
 
             future = asyncio.run_coroutine_threadsafe(_send(), self._loop)
             future.add_done_callback(self._on_send_done)

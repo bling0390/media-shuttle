@@ -722,14 +722,54 @@ class ExtractorRegistryTests(unittest.TestCase):
         self.assertEqual(cls.forum_key, "socialmediagirls")
 
     def test_simpcity_extractor_class_exists(self):
-        # simpcity is registered in EXTRACTORS as a stub but its
-        # hostname is not yet in DEFAULT_HOST_TO_FORUM_KEY, so
-        # select_extractor_class still raises. The class is
-        # available for wiring up later via
-        # DEFAULT_HOST_TO_FORUM_KEY.
+        # simpcity is registered in EXTRACTORS as a stub and its
+        # hostname is wired up in DEFAULT_HOST_TO_FORUM_KEY, so
+        # select_extractor_class resolves to the stub class for
+        # any simpcity.cr thread URL.
         self.assertIn("simpcity", EXTRACTORS)
-        with self.assertRaises(UnsupportedForumError):
-            select_extractor_class("https://simpcity.example/threads/x.1/")
+        cls = select_extractor_class(
+            "https://simpcity.cr/threads/yingxiu-xyz-moliwushe-com.207368/"
+        )
+        self.assertIs(cls, EXTRACTORS["simpcity"])
+        self.assertEqual(cls.forum_key, "simpcity")
+
+    def test_simpcity_prefixed_session_user_cookies_pass_filter(self):
+        # SimpCity's per-site XenForo install prefixes the
+        # canonical cookie names (``yMziCv8BrCZz1o7_session``,
+        # ``yMziCv8BrCZz1o7_user``). The cookie filter must
+        # accept the prefix variants so we can paste the raw
+        # devtools cookie blob into the env var without
+        # dropping the auth cookies.
+        from core.providers.forum.cookies import (
+            _filter_allowed,
+            _parse_cookie_kv,
+        )
+
+        raw = (
+            "yMziCv8BrCZz1o7_user=1434236%2Cabc; "
+            "yMziCv8BrCZz1o7_session=KHl7Q6A6mhVdevzBFi; "
+            "oMasid=f32f0bcf1d4366d2; "
+            "__ddg1_=hI2ZwSlDYLEXSa1Dv2Aa; "
+            "__PPU_ppucnt=1"
+        )
+        parsed = _parse_cookie_kv(raw)
+        filtered = _filter_allowed(parsed)
+        # Auth cookies survive, ddos-guard / bm-session / __PPU
+        # are dropped.
+        self.assertIn("yMziCv8BrCZz1o7_user", filtered)
+        self.assertIn("yMziCv8BrCZz1o7_session", filtered)
+        self.assertNotIn("oMasid", filtered)
+        self.assertNotIn("__ddg1_", filtered)
+        self.assertNotIn("__PPU_ppucnt", filtered)
+
+    def test_smpcity_env_var_name(self):
+        # Sanity: forum_key='simpcity' -> 'FORUMS_SIMPCITY_COOKIE'.
+        from core.providers.forum.cookies import _env_var_name
+
+        self.assertEqual(
+            _env_var_name("simpcity"),
+            "FORUMS_SIMPCITY_COOKIE",
+        )
 
     def test_unknown_host_raises(self):
         with self.assertRaises(UnsupportedForumError):

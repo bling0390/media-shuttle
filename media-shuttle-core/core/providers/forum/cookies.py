@@ -27,6 +27,14 @@ from urllib.parse import urlparse
 # dropped at request time. ``__ddg*`` (DuckDuckGo privacy essentials)
 # and ``_ga*`` (Google Analytics) have no value to a server-side
 # fetch and may even trigger anti-bot heuristics.
+#
+# SocialMediaGirls uses the default XenForo cookie names
+# (``xf_session`` / ``xf_user`` / ``xf_csrf``). Other XenForo
+# installations prefix the same three cookies with a per-site
+# token (``yMziCv8BrCZz1o7_session`` on SimpCity, etc.). To
+# keep the resolver agnostic of the prefix we accept any cookie
+# whose name *ends* with ``_session`` / ``_user`` / ``_csrf``;
+# the prefix is opaque to the server and we never inspect it.
 _ALLOWED_COOKIE_NAMES = frozenset(
     {
         "xf_session",
@@ -34,6 +42,21 @@ _ALLOWED_COOKIE_NAMES = frozenset(
         "xf_csrf",
     }
 )
+_ALLOWED_COOKIE_SUFFIXES = ("_session", "_user", "_csrf")
+
+
+def _cookie_name_allowed(name: str) -> bool:
+    """Return True if ``name`` should be forwarded to the forum.
+
+    Exact-match for the canonical XenForo names (SocialMediaGirls
+    on the default install) and suffix-match for prefixed
+    variants (SimpCity, custom XenForo deployments, etc.).
+    Anything else is dropped — see :data:`_ALLOWED_COOKIE_NAMES`
+    for the rationale (anti-bot heuristics on ``__ddg*`` / ``_ga*``).
+    """
+    if name in _ALLOWED_COOKIE_NAMES:
+        return True
+    return any(name.endswith(suffix) for suffix in _ALLOWED_COOKIE_SUFFIXES)
 
 # Hostname suffixes that we recognise. The match is suffix-based so
 # ``forums.socialmediagirls.com`` matches the entry registered for
@@ -78,7 +101,7 @@ def _parse_cookie_kv(blob: str) -> dict[str, str]:
 
 
 def _filter_allowed(cookies: dict[str, str]) -> dict[str, str]:
-    return {k: v for k, v in cookies.items() if k in _ALLOWED_COOKIE_NAMES}
+    return {k: v for k, v in cookies.items() if _cookie_name_allowed(k)}
 
 
 def _cookie_header_for(cookies: dict[str, str]) -> str:
@@ -141,4 +164,5 @@ def build_cookie_header_resolver(
 DEFAULT_HOST_TO_FORUM_KEY: dict[str, str] = {
     "socialmediagirls.com": "socialmediagirls",
     "forums.socialmediagirls.com": "socialmediagirls",
+    "simpcity.cr": "simpcity",
 }

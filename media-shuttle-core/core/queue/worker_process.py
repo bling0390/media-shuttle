@@ -20,6 +20,20 @@ def _created_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_CREATED_QUEUE_KEY", "media_shuttle:task_created")
 
 
+def _forum_thread_queue_key() -> str:
+    """Queue key for the forum dispatcher task.
+
+    Lives next to ``_created_queue_key`` because the
+    forum task is logically a parse-side concern: it
+    walks a thread, extracts links, and fans them out
+    as vanilla ``parse_link`` events onto the regular
+    ``task_created`` queue. The separate queue is so a
+    long-running forum walk does not block regular
+    parse_link consumption.
+    """
+    return os.getenv("MEDIA_SHUTTLE_FORUM_THREAD_QUEUE_KEY", "media_shuttle:task_forum_thread")
+
+
 def _retry_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_RETRY_QUEUE_KEY", "media_shuttle:task_retry")
 
@@ -182,7 +196,7 @@ def _signal_reason(signum: int | None) -> str:
 
 
 def generate_parse_queue_names() -> list[str]:
-    return [_retry_queue_key(), _created_queue_key()]
+    return [_retry_queue_key(), _created_queue_key(), _forum_thread_queue_key()]
 
 
 def generate_download_queue_names() -> list[str]:

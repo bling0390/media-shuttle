@@ -37,6 +37,32 @@ class ApiClient:
             body["destination"] = destination
         return self._request("POST", "/v1/tasks/parse", body=body)
 
+    def create_forum_task(
+        self,
+        url: str,
+        requester_id: str,
+        target: str = "RCLONE",
+        destination: str | None = None,
+        max_pages: int | None = None,
+    ) -> dict:
+        """Submit a forum thread for extraction.
+
+        ``max_pages`` is optional: 0 / None means "use the
+        server-side default (``FORUM_MAX_PAGES``)". The
+        server enforces the upper bound, so the bot never
+        needs to clamp.
+        """
+        body: dict = {
+            "url": url,
+            "requester_id": requester_id,
+            "target": target,
+        }
+        if destination:
+            body["destination"] = destination
+        if max_pages:
+            body["max_pages"] = int(max_pages)
+        return self._request("POST", "/v1/tasks/parse_forum", body=body)
+
     def queue_stats(self) -> dict:
         return self._request("GET", "/v1/stats/queue")
 

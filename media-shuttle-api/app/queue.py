@@ -9,6 +9,9 @@ class TaskPublisher:
     def publish_created_event(self, event: dict) -> None:
         raise NotImplementedError
 
+    def publish_forum_event(self, event: dict) -> None:
+        raise NotImplementedError
+
     def pop_created_event(self, timeout_seconds: int = 1) -> dict | None:
         raise NotImplementedError
 
@@ -17,15 +20,25 @@ class InMemoryTaskPublisher(TaskPublisher):
     def __init__(self) -> None:
         self._items: list[dict] = []
         self._lock = Lock()
+        self._forum_items: list[dict] = []
 
     @property
     def items(self) -> list[dict]:
         with self._lock:
             return list(self._items)
 
+    @property
+    def forum_items(self) -> list[dict]:
+        with self._lock:
+            return list(self._forum_items)
+
     def publish_created_event(self, event: dict) -> None:
         with self._lock:
             self._items.append(event)
+
+    def publish_forum_event(self, event: dict) -> None:
+        with self._lock:
+            self._forum_items.append(event)
 
     def pop_created_event(self, timeout_seconds: int = 1) -> dict | None:
         with self._lock:
@@ -51,6 +64,12 @@ class RedisTaskPublisher(TaskPublisher):
         self._queue_key = queue_key
         self._task_name = celery_task_name or os.getenv(
             "MEDIA_SHUTTLE_CORE_CREATED_TASK_NAME", "core.queue.tasks.process_created_event"
+        )
+        self._forum_queue_key = os.getenv(
+            "MEDIA_SHUTTLE_FORUM_THREAD_QUEUE_KEY", "media_shuttle:task_forum_thread"
+        )
+        self._forum_task_name = os.getenv(
+            "MEDIA_SHUTTLE_CORE_FORUM_TASK_NAME", "core.queue.tasks.process_forum_thread"
         )
         self._celery_app = None
         self._client = None
@@ -79,6 +98,25 @@ class RedisTaskPublisher(TaskPublisher):
             )
             return
         self._client.rpush(self._queue_key, json.dumps(event))
+
+    def publish_forum_event(self, event: dict) -> None:
+        """Publish a ``parse_forum_thread`` event to its own queue.
+
+        The forum worker drains a different queue from
+        ``task_created`` because its task_type differs and
+        its handler is not interchangeable with
+        ``process_created_event``.
+        """
+        if self._celery_app is not None:
+            self._celery_app.send_task(
+                self._forum_task_name,
+                args=[event],
+                queue=self._forum_queue_key,
+                routing_key=self._forum_queue_key,
+                serializer="json",
+            )
+            return
+        self._client.rpush(self._forum_queue_key, json.dumps(event))
 
     def pop_created_event(self, timeout_seconds: int = 1) -> dict | None:
         if self._client is None:

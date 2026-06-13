@@ -24,10 +24,38 @@ except Exception:  # pragma: no cover - celery optional in local dev
     worker_shutdown = None
 
 TASK_PARSE_CREATED = "core.queue.tasks.process_created_event"
+TASK_PARSE_FORUM_THREAD = "core.queue.tasks.process_forum_thread"
 TASK_DOWNLOAD_SOURCE = "core.queue.tasks.process_download_source"
 TASK_UPLOAD_RESULT = "core.queue.tasks.process_upload_result"
 TASK_FINALIZE = "core.queue.tasks.process_finalize_task"
 TASK_WORKER_CONTROL = "core.queue.tasks.apply_worker_control"
+
+
+def _forum_status_to_enum(status: str):
+    """Map the forum dispatcher's string status to a TaskStatus enum.
+
+    The forum dispatcher (``ForumDispatchResult.status``) uses
+    plain strings so the layer can be tested without importing
+    the core enum. The repository, however, insists on
+    ``TaskStatus`` instances (it calls ``.value`` to serialize
+    into mongo). The mapping is centralized here so the
+    dispatcher can stay enum-agnostic.
+    """
+    if status == "SUCCEEDED_WITH_NO_OUTPUT":
+        # Reuse SUCCEEDED — the *message* field on the record
+        # carries the "no links" detail. Adding a new enum
+        # value would be a wider change touching the api
+        # status response schema and the operator dashboard.
+        return TaskStatus.SUCCEEDED
+    if status == "FAILED":
+        return TaskStatus.FAILED
+    if status == "SUCCEEDED":
+        return TaskStatus.SUCCEEDED
+    # Default to QUEUED for anything we don't recognize;
+    # this is unreachable in practice (dispatcher only
+    # returns the three values above) but it keeps the
+    # helper total.
+    return TaskStatus.QUEUED
 
 logger = setup_logging()
 
@@ -38,6 +66,17 @@ def _utc_now_iso() -> str:
 
 def _created_queue_key() -> str:
     return os.getenv("MEDIA_SHUTTLE_CREATED_QUEUE_KEY", "media_shuttle:task_created")
+
+
+def _forum_thread_queue_key() -> str:
+    """Queue key consumed by :func:`process_forum_thread_logic`.
+
+    Kept separate from ``task_created`` so the parse worker
+    never accidentally picks up a forum-dispatcher event
+    (the events look similar — both are ``task.created.v1`` —
+    and the worker that should handle them differs).
+    """
+    return os.getenv("MEDIA_SHUTTLE_FORUM_THREAD_QUEUE_KEY", "media_shuttle:task_forum_thread")
 
 
 def _notification_queue_key() -> str:
@@ -441,6 +480,182 @@ def process_upload_result_logic(
         }
 
 
+def _publish_forum_fanout_events(events, service):
+    """Publish each fan-out event onto ``task_created``.
+
+    The fan-out events are *normal* ``parse_link`` events —
+    the forum worker just hands them to the same queue the
+    rest of the pipeline already drains. The fan-out events
+    are not persisted as their own TaskRecord here: the
+    downstream ``process_created_event`` will do that when
+    it consumes the event. That keeps mongo writes single-
+    source.
+
+    Routing: we MUST go through ``celery_app.send_task``
+    rather than a raw ``redis.rpush`` so the broker wraps
+    the payload in the celery envelope (with ``properties``
+    + headers). Bypassing celery — as an earlier revision
+    did — produces messages that kombu's redis transport
+    cannot decode (``KeyError: 'properties'`` on the
+    consumer side), which crashes the parse worker the
+    first time it pops one.
+    """
+    if not events:
+        return 0
+    app = _resolve_celery_app()
+    if app is None:
+        logger.warning("forum fanout skipped: celery app unavailable")
+        return 0
+    created_key = _created_queue_key()
+    task_name = os.getenv(
+        "MEDIA_SHUTTLE_CORE_CREATED_TASK_NAME",
+        "core.queue.tasks.process_created_event",
+    )
+    persisted = 0
+    for event in events:
+        try:
+            app.send_task(
+                task_name,
+                args=[event],
+                queue=created_key,
+                routing_key=created_key,
+                serializer="json",
+            )
+            persisted += 1
+        except Exception as exc:
+            logger.warning(
+                f"forum fanout publish failed task_id={event.get('task_id')} reason={exc}"
+            )
+    return persisted
+
+
+def _resolve_celery_app():
+    """Return the module-level celery app, or None.
+
+    The forum fanout helper used to fall through to a raw
+    redis publish when celery was unavailable, but the
+    resulting messages were unparseable by the consumer.
+    The current implementation explicitly requires celery
+    and returns None if it isn't loaded; the caller then
+    logs and bails. This makes the failure mode loud
+    rather than silently corrupting the queue.
+    """
+    return celery_app
+
+
+def process_forum_thread_logic(event, app, service=None):
+    """Run a ``parse_forum_thread`` event end-to-end.
+
+    Differences vs ``process_created_event_logic``:
+
+    * No retry on failure (Q2: forum task failure is terminal).
+    * On success, publish the fanned-out ``parse_link`` events
+      back onto ``task_created`` so the existing download /
+      upload pipeline picks them up unchanged.
+    * The forum task record itself transitions to
+      ``SUCCEEDED`` or ``SUCCEEDED_WITH_NO_OUTPUT`` with a
+      short message — there are no ``artifacts`` to record
+      because the *downloads* happen later in the parse_link
+      tasks, not here.
+    """
+    service = service or build_core_service()
+    task_hint = event.get("task_id", "")
+    logger.info(f"forum task received task_id={task_hint or '-'}")
+
+    try:
+        record = service.create_task_from_event(event)
+        task_id = record.task_id
+        service.repository.update_status(task_id, TaskStatus.PARSING)
+
+        # ``build_forum_dispatcher`` is lazy-imported to keep
+        # the celery module importable in dev environments
+        # that don't have lxml installed.
+        from ..providers.forum import build_forum_dispatcher
+        cap_env = os.environ.get("FORUM_FANOUT_CAP", "200")
+        try:
+            cap = int(cap_env)
+        except (TypeError, ValueError):
+            cap = 200
+        dispatcher = build_forum_dispatcher(fanout_cap=cap)
+        result = dispatcher.dispatch(event)
+
+        service.repository.update_status(task_id, _forum_status_to_enum(result.status), message=result.message)
+        service.repository.update_runtime_fields(
+            task_id,
+            sources=[],
+            artifacts=[],
+            last_error=result.last_error,
+        )
+
+        if result.status == "FAILED":
+            logger.error(
+                f"forum task failed task_id={task_id} reason={result.last_error}"
+            )
+            return {
+                "state": "failed",
+                "task_id": task_id,
+                "reason": result.last_error or "forum dispatch failed",
+            }
+
+        if result.status == "SUCCEEDED_WITH_NO_OUTPUT":
+            first_record = service.repository.get(task_id)
+            requester_id = (
+                str(getattr(first_record, "requester_id", "") or "")
+                if first_record is not None
+                else ""
+            )
+            if requester_id:
+                _publish_task_completed_event(
+                    {
+                        "task_id": task_id,
+                        "requester_id": requester_id,
+                        "file_name": result.message,
+                        "size_bytes": 0,
+                        "location": "",
+                        "spec_version": "task.completed.v1",
+                    }
+                )
+            return {
+                "state": "succeeded",
+                "task_id": task_id,
+                "source_count": 0,
+                "message": result.message,
+            }
+
+        published = _publish_forum_fanout_events(
+            result.fanned_out_events, service
+        )
+        logger.info(
+            f"forum task succeeded task_id={task_id} "
+            f"pages_walked={result.pages_walked} "
+            f"extracted={result.extracted_links} "
+            f"fanned_out={result.fanned_out_count} "
+            f"published={published}"
+        )
+        return {
+            "state": "succeeded",
+            "task_id": task_id,
+            "pages_walked": result.pages_walked,
+            "extracted": result.extracted_links,
+            "fanned_out": result.fanned_out_count,
+            "message": result.message,
+        }
+    except Exception as exc:
+        task_id = event.get("task_id")
+        if task_id:
+            try:
+                service.repository.update_status(task_id, TaskStatus.FAILED, str(exc))
+                service.repository.update_runtime_fields(task_id, last_error=str(exc))
+            except Exception:
+                pass
+        logger.exception(f"forum task failed task_id={task_id or '-'} reason={exc}")
+        return {
+            "state": "failed",
+            "task_id": task_id,
+            "reason": str(exc),
+        }
+
+
 def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dict[str, Any], task_id: str, app, service=None) -> dict:
     service = service or build_core_service()
     artifacts = _build_artifacts(upload_results)
@@ -561,6 +776,10 @@ if celery_app is not None:
     @celery_app.task(name=TASK_PARSE_CREATED)
     def process_created_event(event: dict[str, Any]) -> dict[str, Any]:
         return process_created_event_logic(event=event, app=celery_app)
+
+    @celery_app.task(name=TASK_PARSE_FORUM_THREAD)
+    def process_forum_thread(event: dict[str, Any]) -> dict[str, Any]:
+        return process_forum_thread_logic(event=event, app=celery_app)
 
     @celery_app.task(name=TASK_DOWNLOAD_SOURCE, bind=True)
     def process_download_source(self, event: dict[str, Any], task_id: str, source: dict[str, Any]) -> dict[str, Any]:

@@ -25,6 +25,31 @@ class CreateTaskRequest:
 
 
 @dataclass
+class CreateForumTaskRequest:
+    """Body of ``POST /v1/tasks/parse_forum``.
+
+    Same shape as :class:`CreateTaskRequest` plus an optional
+    ``max_pages`` override. The forum dispatcher reads the
+    rest of the payload (target / destination) identically
+    to a regular parse_link task — the fan-out events it
+    emits downstream are vanilla ``parse_link`` events
+    carrying the same target / destination.
+
+    ``max_pages`` is capped at the runtime ``FORUM_MAX_PAGES``
+    floor (the request can only lower the cap, not raise
+    it). The cap is intentionally not operator-tunable per
+    request: the fan-out cap (default 200) is a safety
+    threshold, and exposing it would let a misclick blow
+    up the queue.
+    """
+    url: str
+    requester_id: str
+    target: str = "RCLONE"
+    destination: str = ""
+    max_pages: int = 0
+
+
+@dataclass
 class TaskRecord:
     task_id: str
     idempotency_key: str

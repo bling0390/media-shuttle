@@ -43,6 +43,7 @@ def run_bot() -> None:
             await message.reply(
                 "Usage:\n"
                 "  /leech <url> [destination]\n"
+                "  /leech forum <url> [max_pages=N]\n"
                 "  /leech cleanup [dry]"
             )
             return
@@ -61,6 +62,55 @@ def run_bot() -> None:
             result = handlers.on_cleanup_command(dry_run=dry)
             from .handlers import format_cleanup_reply
             await message.reply(format_cleanup_reply(result))
+            return
+
+        # ``/leech forum <url> [max_pages=N]`` walks a forum
+        # thread, extracts the download links inside the
+        # pages, dedupes bunkr mirrors + forum-internal
+        # noise, and fans out the remaining links as
+        # individual ``parse_link`` events onto the regular
+        # ``task_created`` queue. The bot hands the forum
+        # event to the api and replies immediately with the
+        # forum task_id; the actual thread walk happens
+        # asynchronously in a background core worker. Per-file
+        # upload notifications arrive later via the regular
+        # task.completed notifier once the fanned-out
+        # ``parse_link`` events finish.
+        #
+        # ``max_pages=N`` is optional and can only *lower*
+        # the server-side ``FORUM_MAX_PAGES`` cap, never
+        # raise it. The cap is enforced by the api (see
+        # ``validate_create_forum_request``).
+        if sub == "forum":
+            if len(args) < 3:
+                await message.reply("Usage: /leech forum <url> [max_pages=N]")
+                return
+            url = args[2].strip()
+            if not url:
+                await message.reply("Usage: /leech forum <url> [max_pages=N]")
+                return
+            max_pages: int | None = None
+            if len(args) >= 4:
+                tail = args[3].strip()
+                if tail.startswith("max_pages="):
+                    tail = tail.split("=", 1)[1]
+                try:
+                    max_pages = int(tail)
+                except ValueError:
+                    await message.reply(
+                        f"invalid max_pages={tail!r}; expected integer"
+                    )
+                    return
+            result = handlers.on_leech_forum_command(
+                requester_id=str(message.from_user.id),
+                url=url,
+                target="RCLONE",
+                max_pages=max_pages,
+            )
+            await message.reply(
+                f"forum task queued: {result.get('task_id', '-')} "
+                f"(max_pages={max_pages or 'default'})"
+            )
             return
 
         url = sub

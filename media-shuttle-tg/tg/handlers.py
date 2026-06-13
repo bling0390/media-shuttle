@@ -115,6 +115,33 @@ class TgHandlers:
             destination=destination,
         )
 
+    def on_leech_forum_command(
+        self,
+        requester_id: str,
+        url: str,
+        target: str = "RCLONE",
+        destination: str | None = None,
+        max_pages: int | None = None,
+    ) -> dict:
+        """Submit a forum thread for extraction.
+
+        The forum task is dispatched asynchronously (B-scheme
+        from the design notes): the bot hands the event to
+        the api, the api publishes it to
+        ``media_shuttle:task_forum_thread``, and the core
+        worker walks the thread in the background. The
+        operator gets a task_id back immediately and the
+        per-file upload notifications arrive later as the
+        fan-out ``parse_link`` events complete.
+        """
+        return self.api.create_forum_task(
+            url=url,
+            requester_id=requester_id,
+            target=target,
+            destination=destination,
+            max_pages=max_pages,
+        )
+
     def on_monitor_command(self) -> dict:
         return self.api.queue_stats()
 

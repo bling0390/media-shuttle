@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from .contracts import DEFAULT_RCLONE_DESTINATION, validate_create_request
-from .models import CreateTaskRequest, TaskRecord, WorkerRecord, utc_now_iso
+from .contracts import DEFAULT_RCLONE_DESTINATION, validate_create_request, validate_create_forum_request
+from .models import CreateTaskRequest, CreateForumTaskRequest, TaskRecord, WorkerRecord, utc_now_iso
 from .queue import TaskPublisher
 from .repository import TaskRepository, WorkerRepository
 from .utils import make_idempotency_key
@@ -65,6 +65,58 @@ class ApiService:
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         return self.repository.get(task_id)
+
+    def create_forum_thread_task(self, request: CreateForumTaskRequest) -> TaskRecord:
+        """Submit a ``parse_forum_thread`` task.
+
+        The forum task is its own event on a separate queue
+        (``media_shuttle:task_forum_thread``). The
+        ``task_type`` on the event tells the core worker
+        which handler to invoke. The downstream fan-out
+        events produced by the dispatcher are vanilla
+        ``parse_link`` events, so this method only knows
+        how to publish the *forum* event itself.
+        """
+        payload = {
+            "url": request.url,
+            "requester_id": request.requester_id,
+            "target": request.target,
+            "destination": request.destination,
+            "max_pages": int(request.max_pages or 0),
+        }
+        validate_create_forum_request(payload)
+        resolved_destination = payload.get("destination") or DEFAULT_RCLONE_DESTINATION
+
+        task_id = str(uuid.uuid4())
+        idempotency_key = make_idempotency_key(
+            f"forum:{request.url}:{request.max_pages}", request.requester_id
+        )
+        timestamp = utc_now_iso()
+
+        event = {
+            "spec_version": "task.created.v1",
+            "task_id": task_id,
+            "task_type": "parse_forum_thread",
+            "idempotency_key": idempotency_key,
+            "created_at": timestamp,
+            "payload": payload,
+        }
+
+        record = TaskRecord(
+            task_id=task_id,
+            idempotency_key=idempotency_key,
+            status="QUEUED",
+            requester_id=request.requester_id,
+            url=request.url,
+            target=request.target,
+            destination=resolved_destination,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
+        self.repository.create(record)
+        self.publisher.publish_forum_event(event)
+        return record
 
     def list_tasks(self, status: str | None, limit: int) -> list[TaskRecord]:
         return self.repository.list(status=status, limit=limit)

@@ -4,7 +4,7 @@ import time
 
 from .container import build_container
 from .logging import setup_logging
-from .models import CreateTaskRequest
+from .models import CreateTaskRequest, CreateForumTaskRequest
 
 logger = setup_logging()
 container = build_container()
@@ -58,6 +58,23 @@ def create_parse_task(body: dict):
         # TypeError covers malformed bodies that omit required fields
         # (e.g. ``{}``); ValueError covers semantic errors raised by
         # ``validate_create_request``.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"task_id": record.task_id, "status": "QUEUED"}
+
+
+@app.post("/v1/tasks/parse_forum", status_code=202)
+def create_forum_thread_task(body: dict):
+    """Submit a forum thread for link extraction + fan-out.
+
+    Body shape: see :class:`CreateForumTaskRequest`. The
+    forum dispatcher is async (B-scheme from the design
+    notes) so the response returns a ``task_id`` and the
+    actual extraction happens in a background worker.
+    """
+    try:
+        request = CreateForumTaskRequest(**body)
+        record = container.service.create_forum_thread_task(request)
+    except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"task_id": record.task_id, "status": "QUEUED"}
 

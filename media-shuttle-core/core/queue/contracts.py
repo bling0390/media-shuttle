@@ -35,10 +35,13 @@ def validate_task_created_event(event: dict) -> None:
     _required(event, ["spec_version", "task_id", "task_type", "idempotency_key", "created_at", "payload"])
     if event["spec_version"] != "task.created.v1":
         raise ContractError("invalid spec_version")
-    if event["task_type"] != "parse_link":
+    if event["task_type"] not in {"parse_link", "parse_forum_thread"}:
         raise ContractError("invalid task_type")
     datetime.fromisoformat(event["created_at"].replace("Z", "+00:00"))
     payload = event["payload"]
+    # ``parse_forum_thread`` carries the same fields as ``parse_link``
+    # (the dispatcher fans them out into individual parse_link events
+    # downstream), so the same required-fields check applies.
     _required(payload, ["url", "requester_id", "target", "destination"])
     if payload["target"] == "TELEGRAM":
         _validate_telegram_destination(str(payload["destination"]))

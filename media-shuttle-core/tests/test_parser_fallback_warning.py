@@ -55,17 +55,16 @@ def _generic_ok(url: str) -> list:
 
 
 class ParserRegistryFallbackWarningTests(unittest.TestCase):
-    def test_warning_logged_when_specific_provider_returns_empty_then_generic_fallback_takes_over(self) -> None:
-        # As of the bunkr typo fix, when a site-specific
-        # provider matches and returns an empty list we
-        # *no longer* hand off to ``generic_fallback``:
-        # the page-URL fallback would download the HTML
-        # wrapper and upload a 51-byte meta-dump file.
-        # We return ``[]`` instead, log a WARNING naming
-        # the providers that were tried, and let the
-        # caller mark the task FAILED with a meaningful
-        # reason. ``generic_fallback`` only takes over
-        # when no specific provider matched at all.
+    def test_warning_logged_when_specific_provider_returns_empty_then_generic_fallback_refused(self) -> None:
+        # As of the no-generic-fallback change, when a
+        # site-specific provider matches and returns an
+        # empty list we *no longer* hand off to
+        # ``generic_fallback``: the page-URL fallback
+        # would download the HTML wrapper and upload a
+        # 51-byte meta-dump file. We return ``[]``
+        # instead, log a WARNING naming the providers
+        # that were tried, and let the caller mark the
+        # task FAILED with a meaningful reason.
         registry = ParserRegistry(mode="live")
         registry.register_provider(
             ParseProvider("gofile_live", "live", _match_always, _empty)
@@ -78,7 +77,7 @@ class ParserRegistryFallbackWarningTests(unittest.TestCase):
             sources = registry.parse("https://example.com/whatever")
         self.assertEqual(sources, [])
         joined = "\n".join(cm.output)
-        self.assertIn("abandoned after site-specific", joined)
+        self.assertIn("refusing to use generic_fallback", joined)
         self.assertIn("gofile_live", joined)
         self.assertIn("https://example.com/whatever", joined)
 
@@ -110,17 +109,24 @@ class ParserRegistryFallbackWarningTests(unittest.TestCase):
             sources = registry.parse("https://example.com/whatever")
         self.assertEqual(sources, [])
 
-    def test_no_warning_when_first_provider_is_already_generic_fallback(self) -> None:
-        # If the only provider is generic_fallback (no specific parser
-        # to skip), the warning is noisy and unhelpful; we should stay
-        # quiet.
+    def test_warning_even_when_generic_fallback_is_the_only_provider(self) -> None:
+        # As of the no-generic-fallback change we always
+        # refuse to use ``generic_fallback``, even when
+        # it's the *only* provider. Previously the
+        # single-provider path returned the generic
+        # result silently; now it returns ``[]`` and
+        # logs the same "refusing to use" warning. The
+        # operator must wire a real parser to support
+        # an unmodelled host.
         registry = ParserRegistry(mode="live")
         registry.register_provider(
             ParseProvider("generic_fallback", "all", _match_always, _generic_ok)
         )
-        with self.assertNoLogs("media-shuttle-core", level="WARNING"):
+        with self.assertLogs("media-shuttle-core", level="WARNING") as cm:
             sources = registry.parse("https://example.com/whatever")
-        self.assertEqual(sources[0].site, "GENERIC")
+        self.assertEqual(sources, [])
+        joined = "\n".join(cm.output)
+        self.assertIn("refusing to use generic_fallback", joined)
 
     def test_specific_returns_empty_no_longer_falls_through(self) -> None:
         # Regression: a bunkr URL pointing at a typo'd
@@ -139,12 +145,18 @@ class ParserRegistryFallbackWarningTests(unittest.TestCase):
         sources = registry.parse("https://bunkrr.su/v/sa2dshLAApy4w")
         self.assertEqual(sources, [])
 
-    def test_generic_fallback_still_works_when_no_specific_matched(self) -> None:
-        # When a URL doesn't match any specific provider
-        # the generic_fallback is still the safety net
-        # (e.g. a CDN that has a ``.mp4`` direct file
-        # and never had a site-specific parser). This
-        # path stays unchanged.
+    def test_generic_fallback_never_used(self) -> None:
+        # Generic is now strictly an internal "site-specific
+        # is the only path" exception — it never wins, ever.
+        # Even when *no* site-specific matcher accepts the
+        # URL (e.g. a typo'd phishing domain like
+        # ``bunkrr.su`` whose own matcher now rejects, or
+        # any domain we don't model), we don't fall through
+        # to ``generic_fallback`` and silently upload the
+        # 51-byte HTML stub the upstream returned. The
+        # task is marked FAILED instead. To support an
+        # unknown host the operator must wire a real
+        # parser.
         registry = ParserRegistry(mode="live")
 
         def _no_match(_url: str) -> bool:
@@ -157,8 +169,7 @@ class ParserRegistryFallbackWarningTests(unittest.TestCase):
             ParseProvider("generic_fallback", "all", _match_always, _generic_ok)
         )
         sources = registry.parse("https://cdn.example.com/video.mp4")
-        self.assertEqual(len(sources), 1)
-        self.assertEqual(sources[0].site, "GENERIC")
+        self.assertEqual(sources, [])
 
 
 if __name__ == "__main__":  # pragma: no cover

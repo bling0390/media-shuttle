@@ -53,6 +53,23 @@ class ParserRegistry:
         failure as ``parser returned no sources`` and the task is
         marked FAILED by the surrounding logic. The WARNING is
         retained so operators can see what was tried.
+
+        Operators have reported that the same hazard shows up
+        for URLs that **no** site-specific matcher recognises
+        at all (e.g. a typo'd phishing domain like
+        ``bunkrr.su`` whose own matcher we now reject, or a
+        forum-posted link to a domain we don't model). Falling
+        through to ``generic_fallback`` in that case is even
+        worse than the matched-and-empty case: we don't even
+        know what the page is, so we'd happily upload whatever
+        bytes the upstream returned (typically a 51-byte HTML
+        stub, which has been showing up in the destination
+        drive as a row of corrupt files named after the page
+        slug). Generic is now strictly an internal
+        "site-specific is the only path" exception — it never
+        wins, ever. To reach a generic page URL the operator
+        must wire a real parser; in the meantime the task is
+        marked FAILED.
         """
         tried_empty: list[str] = []
         matched_specific = False
@@ -69,31 +86,16 @@ class ParserRegistry:
                 if not is_generic:
                     return result
                 # ``generic_fallback`` produced a result.
-                # If a site-specific provider was tried
-                # and returned empty, suppress the
-                # fall-through: returning the page URL
-                # itself is almost always wrong (it
-                # becomes a 51-byte meta-dump uploaded
-                # to the destination drive).
-                if matched_specific and tried_empty:
-                    _logger.warning(
-                        "parser_registry.parse abandoned after "
-                        f"site-specific providers returned empty "
-                        f"url={url!r} tried_empty={tried_empty!r}"
-                    )
-                    return []
-                # No site-specific provider matched at
-                # all — this is a true fallback case
-                # (e.g. a direct file URL or an unknown
-                # CDN). Keep the legacy WARNING so
-                # operators can see the no-match.
-                if tried_empty:
-                    _logger.warning(
-                        "parser_registry.parse fell through to "
-                        f"generic_fallback url={url!r} "
-                        f"tried_empty={tried_empty!r}"
-                    )
-                return result
+                # We never actually use this — see the
+                # outer note — but log it for operators
+                # who have to debug a "where did this
+                # 79-byte file come from?" incident.
+                _logger.warning(
+                    "parser_registry.parse refusing to use "
+                    f"generic_fallback result url={url!r} "
+                    f"tried_empty={tried_empty!r}"
+                )
+                return []
             tried_empty.append(provider.name)
         if matched_specific and tried_empty:
             _logger.warning(

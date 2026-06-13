@@ -61,7 +61,30 @@ def extract_drive_id(url: str) -> str | None:
     return None
 
 
-def http_json(url: str, headers: dict[str, str], method: str = "GET", body: dict | None = None) -> dict:
+def http_json(
+    url: str,
+    headers: dict[str, str],
+    method: str = "GET",
+    body: dict | None = None,
+) -> dict:
+    """Fetch a JSON resource.
+
+    The gofile v2 API in particular returns
+    ``{"status": "error-notPremium", "data": {}}`` with
+    ``HTTP 401`` for content that a guest token is not
+    allowed to read; the structured ``status`` field is
+    what callers should branch on, not the HTTP status
+    code. We therefore do **not** call
+    :py:meth:`httpx.Response.raise_for_status` and
+    instead return the decoded body unconditionally so
+    callers can inspect ``status`` themselves.
+
+    If the body is not JSON (e.g. an upstream nginx
+    502 with an HTML body) we return ``{}`` so the
+    caller's ``payload.get(\"status\") != \"ok\"`` check
+    fires and produces a structured failure rather
+    than a stack trace.
+    """
     response = httpx.request(
         method=method,
         url=url,
@@ -70,9 +93,13 @@ def http_json(url: str, headers: dict[str, str], method: str = "GET", body: dict
         timeout=20.0,
         follow_redirects=True,
     )
-    response.raise_for_status()
     payload = response.text
-    return json.loads(payload) if payload else {}
+    if not payload:
+        return {}
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
 
 
 def http_text(url: str, headers: dict[str, str] | None = None, method: str = "GET") -> str:

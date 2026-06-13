@@ -231,6 +231,48 @@ class XenForoHelperTests(unittest.TestCase):
         html = "<html><body>no nav at all</body></html>"
         self.assertEqual(detect_last_page_from_html(html), 1)
 
+    def test_detect_last_page_skips_next_anchor(self) -> None:
+        # Regression: real XenForo renders Next/Prev as
+        # <a class="pageNav-jump pageNav-jump--next" href=".../page-2">Next</a>.
+        # The pre-fix Strategy 1 matched ``a.pageNav-jump`` and
+        # returned page=2, capping the walk at the second page
+        # when the actual last page was much further.
+        html = """
+<html><body>
+  <nav class="pageNav pageNav--skipEnd">
+    <a href="/threads/x.123/">1</a>
+    <a class="pageNav-jump pageNav-jump--next" href="/threads/x.123/page-2">Next</a>
+    <a class="pageNav-jump pageNav-jump--last" href="/threads/x.123/page-49">Last</a>
+  </nav>
+  <ul class="pageNav-main">
+    <li class="pageNav-page"><a href="/threads/x.123/">1</a></li>
+    <li class="pageNav-page"><a href="/threads/x.123/page-2">2</a></li>
+    <li class="pageNav-page"><a href="/threads/x.123/page-3">3</a></li>
+    <li class="pageNav-page"><a href="/threads/x.123/page-49">49</a></li>
+  </ul>
+</body></html>
+"""
+        self.assertEqual(detect_last_page_from_html(html), 49)
+
+    def test_detect_last_page_skips_next_in_strategy_two(self) -> None:
+        # Same bug, exercised via Strategy 2: no ``pageNav-jump--last``
+        # class is present (some themes), so we rely on the
+        # "Next"/"Prev" text filter in the numeric-walk path.
+        html = """
+<html><body>
+  <nav class="pageNavWrapper">
+    <ul class="pageNav-main">
+      <li class="pageNav-page"><a href="/threads/x.123/">1</a></li>
+      <li class="pageNav-page"><a href="/threads/x.123/page-2">2</a></li>
+      <li class="pageNav-page pageNav-page--current"><a href="/threads/x.123/page-3">3</a></li>
+      <li class="pageNav-page"><a href="/threads/x.123/page-49">49</a></li>
+      <li class="pageNav-jump pageNav-jump--next"><a href="/threads/x.123/page-2">Next</a></li>
+    </ul>
+  </nav>
+</body></html>
+"""
+        self.assertEqual(detect_last_page_from_html(html), 49)
+
     def test_extract_links_v2_bbwrapper(self):
         html = """
 <html><body>

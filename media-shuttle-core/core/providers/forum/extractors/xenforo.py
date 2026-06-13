@@ -68,17 +68,38 @@ def detect_last_page_from_html(page1_html: str) -> int:
         return 1
 
     # Strategy 1: explicit "last" link.
+    # XenForo renders "Next" / "Prev" / "Last" as <a class="pageNav-jump ...">.
+    # We must filter to anchors whose text or class is "last" only —
+    # "Next" (text='Next', class='pageNav-jump--next') also matches the
+    # generic .pageNav-jump selector, and its href is /page-2, which would
+    # incorrectly cap our walk at page 2.
     for anchor in tree.cssselect("a.pageNav-jump, a[href*='goto/last']"):
         href = anchor.get("href", "")
+        text = (anchor.text or "").strip().lower()
+        cls = (anchor.get("class", "") or "").lower()
+        is_last = (
+            "last" in text
+            or "pageNav-jump--last" in cls
+            or "goto/last" in href
+        )
+        if not is_last:
+            continue
         page = _page_number_from_url(href)
         if page is not None and page > 1:
             return page
 
     # Strategy 2: largest numeric ``href`` inside the nav.
+    # Skip "Next"/"Prev" anchors — they're not page-number targets.
     max_page = 1
     for nav in tree.cssselect(".pageNav, nav.pageNav, .pageNavWrapper"):
         for anchor in nav.cssselect("a[href]"):
             href = anchor.get("href", "")
+            text = (anchor.text or "").strip().lower()
+            cls = (anchor.get("class", "") or "").lower()
+            if "next" in text or "prev" in text:
+                continue
+            if "pageNav-jump--next" in cls or "pageNav-jump--prev" in cls:
+                continue
             page = _page_number_from_url(href)
             if page is not None and page > max_page:
                 max_page = page

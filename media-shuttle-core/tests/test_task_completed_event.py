@@ -69,9 +69,17 @@ class PublishOnSucceedTests(unittest.TestCase):
                 },
             }
         ]
+        # The notification helper reads ``requester_id`` off the
+        # originating ``task.created.v1`` event when it can —
+        # that path is the production one. The mongo fallback
+        # only fires when the event is missing the field.
         result = core_tasks.process_finalize_task_logic(
             upload_results=upload_results,
-            event={"task_id": "abc", "attempt": 0},
+            event={
+                "task_id": "abc",
+                "attempt": 0,
+                "payload": {"requester_id": "1076750810"},
+            },
             task_id="abc",
             app=None,
             service=service,
@@ -86,9 +94,105 @@ class PublishOnSucceedTests(unittest.TestCase):
         self.assertEqual(ev["file_name"], "bar.mp4")
         self.assertEqual(ev["size_bytes"], 1234567890)
 
-    def test_succeeded_skips_publish_when_requester_missing(self):
+    def test_succeeded_uses_mongo_fallback_when_event_lacks_requester(self):
+        # Event is missing ``payload.requester_id`` (e.g. it was
+        # synthesized in-process). The mongo record should be
+        # the source of truth.
+        from core.models import TaskRecord, TaskPayload, TaskStatus
+        record = TaskRecord(
+            task_id="abc",
+            idempotency_key="k",
+            payload=TaskPayload(
+                url="https://example.com/x",
+                requester_id="1076750810",
+                target="RCLONE",
+                destination="115:/x",
+            ),
+            status=TaskStatus.SUCCEEDED,
+        )
         repo = mock.MagicMock()
-        repo.get.return_value = _make_record(None)  # no requester
+        repo.get.return_value = record
+        service = _build_service(repo)
+
+        upload_results = [
+            {
+                "ok": True,
+                "location": "rclone://115:/foo/bar.mp4",
+                "download": {"file_name": "bar.mp4", "size_bytes": 1},
+            }
+        ]
+        result = core_tasks.process_finalize_task_logic(
+            upload_results=upload_results,
+            event={"task_id": "abc", "attempt": 0},
+            task_id="abc",
+            app=None,
+            service=service,
+        )
+
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(len(self._published), 1)
+        self.assertEqual(self._published[0]["requester_id"], "1076750810")
+
+    def test_succeeded_reads_requester_from_event_payload_attribute(self):
+        # ``TaskRecord.requester_id`` does not exist as a flat
+        # attribute — it lives at ``TaskRecord.payload.requester_id``.
+        # When the finalize helper looks it up via ``getattr`` the
+        # right key is ``payload``. This test pins that path so a
+        # future refactor that flattens the dataclass still
+        # behaves correctly.
+        from core.models import TaskRecord, TaskPayload, TaskStatus
+        record = TaskRecord(
+            task_id="abc",
+            idempotency_key="k",
+            payload=TaskPayload(
+                url="https://example.com/x",
+                requester_id="555000111",
+                target="RCLONE",
+                destination="115:/x",
+            ),
+            status=TaskStatus.SUCCEEDED,
+        )
+        repo = mock.MagicMock()
+        repo.get.return_value = record
+        service = _build_service(repo)
+
+        upload_results = [
+            {
+                "ok": True,
+                "location": "rclone://115:/foo/bar.mp4",
+                "download": {"file_name": "bar.mp4", "size_bytes": 1},
+            }
+        ]
+        core_tasks.process_finalize_task_logic(
+            upload_results=upload_results,
+            event={"task_id": "abc", "attempt": 0},
+            task_id="abc",
+            app=None,
+            service=service,
+        )
+
+        # event has no payload; mongo record is the fallback.
+        self.assertEqual(len(self._published), 1)
+        self.assertEqual(self._published[0]["requester_id"], "555000111")
+
+    def test_succeeded_skips_publish_when_requester_missing(self):
+        # Event lacks requester_id AND mongo record has no
+        # requester_id either. No notification; finalize still
+        # transitions to SUCCEEDED.
+        from core.models import TaskRecord, TaskPayload, TaskStatus
+        record = TaskRecord(
+            task_id="abc",
+            idempotency_key="k",
+            payload=TaskPayload(
+                url="https://example.com/x",
+                requester_id="",  # missing on purpose
+                target="RCLONE",
+                destination="115:/x",
+            ),
+            status=TaskStatus.SUCCEEDED,
+        )
+        repo = mock.MagicMock()
+        repo.get.return_value = record
         service = _build_service(repo)
 
         upload_results = [

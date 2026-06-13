@@ -598,12 +598,25 @@ def process_forum_thread_logic(event, app, service=None):
             }
 
         if result.status == "SUCCEEDED_WITH_NO_OUTPUT":
-            first_record = service.repository.get(task_id)
-            requester_id = (
-                str(getattr(first_record, "requester_id", "") or "")
-                if first_record is not None
-                else ""
-            )
+            # ``TaskRecord`` does not expose ``requester_id``
+            # as a flat attribute; it lives at
+            # ``TaskRecord.payload.requester_id``. We prefer
+            # the originating ``task.created.v1`` event
+            # because it is always populated by the time we
+            # reach this branch, and only fall back to mongo
+            # for the rare case where the event is missing
+            # the field.
+            requester_id = str(
+                ((event or {}).get("payload") or {}).get("requester_id") or ""
+            ).strip()
+            if not requester_id:
+                first_record = service.repository.get(task_id)
+                if first_record is not None:
+                    payload = getattr(first_record, "payload", None)
+                    if payload is not None:
+                        requester_id = str(
+                            getattr(payload, "requester_id", "") or ""
+                        ).strip()
             if requester_id:
                 _publish_task_completed_event(
                     {
@@ -692,8 +705,25 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
     # logged and dropped.
     first = next((item for item in upload_results if item.get("ok")), None) or {}
     download = first.get("download") or {}
-    task_doc = service.repository.get(task_id)
-    requester_id = str(getattr(task_doc, "requester_id", "") or "") if task_doc else ""
+    # ``TaskRecord`` doesn't expose ``requester_id`` as a flat
+    # attribute — it lives at ``TaskRecord.payload.requester_id``.
+    # The simplest source for the id is the originating
+    # ``task.created.v1`` event (carried in ``event``), which
+    # always has ``payload.requester_id`` populated when the
+    # request reached us via the queue. We fall back to the
+    # mongo record for the rare case where the event is
+    # synthesized in-process and lacks the field.
+    requester_id = str(
+        ((event or {}).get("payload") or {}).get("requester_id") or ""
+    ).strip()
+    if not requester_id:
+        task_doc = service.repository.get(task_id)
+        if task_doc is not None:
+            payload = getattr(task_doc, "payload", None)
+            if payload is not None:
+                requester_id = str(
+                    getattr(payload, "requester_id", "") or ""
+                ).strip()
     file_name = str(download.get("file_name") or "")
     size_bytes = int(download.get("size_bytes") or 0)
     source_site = str(download.get("site") or "")

@@ -48,6 +48,15 @@ import threading
 import time
 from typing import Any
 
+try:
+    # pyrogram 2.0+ uses an enum for ``parse_mode``; older
+    # versions accepted a plain string. We import lazily so
+    # the notifier module can be imported by the unit tests
+    # without the heavy pyrogram dependency installed.
+    from pyrogram.enums import ParseMode
+except Exception:  # pragma: no cover
+    ParseMode = None
+
 logger = logging.getLogger("media_shuttle.tg.notifier")
 
 # Default key; overridden by MEDIA_SHUTTLE_NOTIFICATION_QUEUE_KEY
@@ -329,8 +338,15 @@ class TaskCompletedNotifier:
         # Falling back from HTML to plain text on a render
         # error would silently produce ugly output, so we
         # detect the box style once and pick ``parse_mode``
-        # accordingly.
-        parse_mode = "html" if text.lstrip().startswith("<pre>") else None
+        # accordingly. ``pyrogram.enums.ParseMode.HTML`` is
+        # the typed value expected by ``send_message`` on
+        # pyrogram 2.0+; older versions accepted the string
+        # ``"html"`` but the enum is the documented form.
+        parse_mode = (
+            ParseMode.HTML
+            if (ParseMode is not None and text.lstrip().startswith("<pre>"))
+            else None
+        )
         try:
             # pyrogram 2.0.x exposes ``send_message`` as a sync
             # wrapper that internally drives its own event loop.

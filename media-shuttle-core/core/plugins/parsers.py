@@ -42,20 +42,65 @@ class ParserRegistry:
         provider that produced the result, naming the providers that
         were tried first and returned empty. See docs/issues/0005 and
         docs/issues/0007 for context.
+
+        As of this change we also **stop** the fall-through when
+        at least one site-specific provider matched and returned an
+        empty list. Reason: a non-empty result from ``generic_fallback``
+        in that situation is a download of the page URL itself, which
+        is almost never what the operator wants (a bunkr page, a
+        phishing replica at a typo'd domain, a CDN that just returns
+        the HTML wrapper, etc.). Returning ``[]`` surfaces the
+        failure as ``parser returned no sources`` and the task is
+        marked FAILED by the surrounding logic. The WARNING is
+        retained so operators can see what was tried.
         """
         tried_empty: list[str] = []
+        matched_specific = False
         for provider in self._iter_active():
             if not provider.matcher(url):
                 continue
+            is_generic = provider.name == "generic_fallback"
+            if not is_generic:
+                matched_specific = True
             result = provider.parser(url)
             if result:
-                if provider.name == "generic_fallback" and tried_empty:
+                # The site-specific provider succeeded.
+                # Nothing more to do.
+                if not is_generic:
+                    return result
+                # ``generic_fallback`` produced a result.
+                # If a site-specific provider was tried
+                # and returned empty, suppress the
+                # fall-through: returning the page URL
+                # itself is almost always wrong (it
+                # becomes a 51-byte meta-dump uploaded
+                # to the destination drive).
+                if matched_specific and tried_empty:
                     _logger.warning(
-                        "parser_registry.parse fell through to generic_fallback "
+                        "parser_registry.parse abandoned after "
+                        f"site-specific providers returned empty "
                         f"url={url!r} tried_empty={tried_empty!r}"
+                    )
+                    return []
+                # No site-specific provider matched at
+                # all — this is a true fallback case
+                # (e.g. a direct file URL or an unknown
+                # CDN). Keep the legacy WARNING so
+                # operators can see the no-match.
+                if tried_empty:
+                    _logger.warning(
+                        "parser_registry.parse fell through to "
+                        f"generic_fallback url={url!r} "
+                        f"tried_empty={tried_empty!r}"
                     )
                 return result
             tried_empty.append(provider.name)
+        if matched_specific and tried_empty:
+            _logger.warning(
+                "parser_registry.parse abandoned after site-specific "
+                f"providers returned empty url={url!r} tried_empty={tried_empty!r}"
+            )
+            return []
         return []
 
 

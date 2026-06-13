@@ -11,7 +11,40 @@ from .common import host, http_json, http_text, is_direct_file_url, safe_name, s
 
 
 def is_bunkr(url: str) -> bool:
-    return "bunkr" in host(url)
+    """Match a real bunkr media host.
+
+    A simple ``"bunkr" in host`` would also match typo'd
+    phishing replicas (e.g. ``bunkrr.su`` — a Russian
+    domain registered 2026-06-12 that returns 200 OK to
+    browsers but resets connections to server-to-server
+    fetchers, leaving the downloader with a 0-byte page).
+    We require the registered domain (sld.tld) to be
+    ``bunkr.<tld>`` and **explicitly reject** the
+    double-r variant ``bunkrr.*`` so the typo is filtered
+    out at the matcher layer rather than at download
+    time. Sub-delivery hosts like ``cdn.bunkr.su`` and
+    ``dl.bunkr.cr`` are accepted because they share the
+    same registered domain.
+    """
+    hostname = host(url)
+    if not hostname:
+        return False
+    # Take the last two labels (the registered domain).
+    # This handles ``bunkr.su``, ``cdn.bunkr.su``,
+    # ``dl.bunkr.cr``, etc. uniformly.
+    labels = hostname.split(".")
+    if len(labels) < 2:
+        return False
+    sld = labels[-2]
+    # Explicitly reject the typo'd double-r variant. This
+    # is a hard-coded block rather than a regex rule
+    # because the typo is targeted: a phishing operator
+    # registered ``bunkrr.su`` (Russian nic.ru, 2026-06)
+    # to catch users miscopying the official ``bunkr.su``
+    # / ``bunkr.si`` / ``bunkr.la`` mirrors.
+    if sld == "bunkrr":
+        return False
+    return sld == "bunkr"
 
 
 def is_bunkr_album(url: str) -> bool:

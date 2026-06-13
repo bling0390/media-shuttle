@@ -143,13 +143,19 @@ class BunkrClassifierTests(unittest.TestCase):
         for url in (
             "https://bunkr.cr/f/abc",
             "https://bunkr.site/v/abc",
-            "https://bunkr.albums.io/a/abc",
-            "https://cdn.bunkrr.su/x",
+            "https://cdn.bunkr.su/x",  # sub-delivery host on the real registered domain
+            "https://dl.bunkr.cr/v/x",
         ):
             self.assertTrue(is_bunkr(url), url)
 
     def test_is_bunkr_rejects_others(self) -> None:
-        for url in ("https://example.com/bunkr", "https://pixeldrain.com/u/abc"):
+        for url in (
+            "https://example.com/bunkr",
+            "https://pixeldrain.com/u/abc",
+            "https://bunkrr.su/v/abc",  # typo'd double-r phishing replica
+            "https://cdn.bunkrr.su/x",  # even on subdelivery: still bunkrr.* — reject
+            "https://bunkr.albums.io/a/abc",  # bunkr sub-word but registered domain is albums.io
+        ):
             self.assertFalse(is_bunkr(url), url)
 
     def test_is_bunkr_album_only_for_a_path(self) -> None:

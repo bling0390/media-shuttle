@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+import httpx
+
 from .api_client import ApiClient
+
+logger = logging.getLogger("media_shuttle.tg.handlers")
 
 
 @dataclass
@@ -180,6 +185,116 @@ class TgHandlers:
 
     def on_retry_command(self, mode: str = "both") -> dict:
         return self.api.admin_retry(mode=mode)
+
+    def on_retry_task_command(self, task_id: str, requester_id: str) -> dict:
+        """Re-queue a single failed task for the operator
+        who owns it.
+
+        Backs the inline ``🔁 重试`` button on the
+        Telegram failure notification. ``task_id`` and
+        ``requester_id`` both come from the callback
+        payload (``retry_<phase>:<task_id>`` plus the
+        original task.completed event's requester_id
+        that the bot already has in scope).
+
+        Returns a small dict with the keys the
+        CallbackQueryHandler expects:
+
+        * ``ok`` — True if the api accepted the retry
+        * ``code`` — short string for the bot to render
+          ("accepted" / "not_found" / "already_retried" /
+          "missing_requester")
+        * ``message`` — Chinese toast shown to the
+          operator via ``answerCallbackQuery``
+        * ``task_id`` — echoed back so the bot can edit
+          the original failure notification
+        * ``task_type`` — ``"parse_link"`` /
+          ``"parse_forum_thread"`` so the bot can show
+          the right follow-up message ("重试中…" vs
+          "重新抓取中…"). Optional; only present on
+          accepted retries.
+
+        We translate ``httpx.HTTPStatusError`` into a
+        structured code instead of letting it bubble:
+        the callback handler lives in a bot event loop
+        and an uncaught exception would just log
+        "Update is handled" without telling the operator
+        anything useful.
+        """
+        task_key = (task_id or "").strip()
+        requester_key = (requester_id or "").strip()
+        if not task_key:
+            return {
+                "ok": False,
+                "code": "missing_task_id",
+                "message": "任务 ID 丢失",
+                "task_id": "",
+            }
+        if not requester_key:
+            return {
+                "ok": False,
+                "code": "missing_requester",
+                "message": "操作者 ID 丢失",
+                "task_id": task_key,
+            }
+        try:
+            result = self.api.retry_task(task_id=task_key, requester_id=requester_key)
+        except httpx.HTTPStatusError as exc:
+            status = int(getattr(exc.response, "status_code", 0) or 0)
+            # 404 covers both a real missing task AND a
+            # cross-operator mismatch — the api is
+            # deliberately indistinguishable for the
+            # reasons in main.py.
+            if status == 404:
+                return {
+                    "ok": False,
+                    "code": "not_found",
+                    "message": "任务不存在或无权操作",
+                    "task_id": task_key,
+                }
+            if status == 409:
+                return {
+                    "ok": False,
+                    "code": "already_retried",
+                    "message": "已重试过，请等待任务跑完",
+                    "task_id": task_key,
+                }
+            if status == 403:
+                return {
+                    "ok": False,
+                    "code": "missing_requester",
+                    "message": "操作者 ID 丢失",
+                    "task_id": task_key,
+                }
+            logger.warning(
+                f"retry_task http error task_id={task_key} status={status} reason={exc}"
+            )
+            return {
+                "ok": False,
+                "code": "http_error",
+                "message": f"api 错误（HTTP {status}）",
+                "task_id": task_key,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"retry_task unexpected error task_id={task_key} reason={exc}")
+            return {
+                "ok": False,
+                "code": "transport_error",
+                "message": f"网络错误：{exc}",
+                "task_id": task_key,
+            }
+        task_type = str(result.get("task_type") or "parse_link")
+        if task_type == "parse_forum_thread":
+            follow_up = "🔁 重新抓取中…"
+        else:
+            follow_up = "🔁 重试中…"
+        return {
+            "ok": True,
+            "code": "accepted",
+            "message": follow_up,
+            "task_id": task_key,
+            "task_type": task_type,
+        }
 
     def on_setting_command(self, key: str, value: str) -> dict:
         return self.api.admin_setting(key=key, value=value)

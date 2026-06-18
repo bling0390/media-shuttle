@@ -132,6 +132,130 @@ def run_bot() -> None:
         stat = handlers.on_monitor_command()
         await message.reply(str(stat))
 
+    @app.on_callback_query()
+    async def retry_callback(_, callback_query):
+        """Handle inline retry buttons on failure notifications.
+
+        Callback data format: ``retry_<phase>:<task_id>``
+        where ``<phase>`` is one of:
+
+        * ``dl`` — re-queue the download phase.
+        * ``ul`` — re-queue the upload phase.
+        * ``fr`` — re-walk a forum thread.
+        * ``all`` — generic retry (reserved for future
+          phases that don't have a custom label).
+
+        The phase suffix is accepted but currently
+        ignored on the api side: every retry is a full
+        re-run of the task. The reason is that the local
+        download may have been cleaned up by the time the
+        operator clicks (see
+        ``core/queue/tasks.py::process_finalize_task_logic``),
+        and a partial re-run would have to recreate the
+        parser's source list from cache, which the
+        pipeline does not expose yet.
+
+        On click we:
+
+        1. Acknowledge the tap with ``answerCallbackQuery``
+           so the button stops spinning and the operator
+           gets a short toast.
+        2. Try to edit the original failure message in
+           place (``editMessageText``) so the chat history
+           is not flooded with "重试中" + the next
+           per-file notification. If we don't have the
+           (chat_id, message_id) index in redis (e.g. the
+           bot was restarted) we fall back to a fresh
+           reply; the button still works.
+        3. Hand off to ``TgHandlers.on_retry_task_command``
+           which translates api responses into a small
+           structured dict and we use the ``code`` field
+           to pick a follow-up toast.
+        """
+        data = (callback_query.data or "").strip()
+        if not data.startswith("retry_"):
+            # We only handle the retry prefix; if some
+            # other callback gets routed here (e.g. a
+            # future feature) we just ack and let the
+            # default handler deal with it.
+            await callback_query.answer()
+            return
+        token, sep, task_id = data[len("retry_"):].partition(":")
+        if not sep or not task_id:
+            await callback_query.answer(
+                "按钮数据损坏",
+                show_alert=True,
+            )
+            return
+        requester_id = str(callback_query.from_user.id)
+        result = handlers.on_retry_task_command(
+            task_id=task_id,
+            requester_id=requester_id,
+        )
+        # Look up the original message so we can edit it
+        # in place. We tolerate the redis lookup failing:
+        # the worst case is a new "重试中" message appears
+        # in the chat, the retry itself still went through.
+        original = None
+        try:
+            import redis as redis_lib
+            import json as json_lib
+            from .notifier import _retry_msg_key, _redis_url
+            client = redis_lib.Redis.from_url(_redis_url())
+            raw = client.get(_retry_msg_key(task_id))
+            if raw:
+                payload = json_lib.loads(raw)
+                original = (
+                    int(payload.get("chat_id") or 0),
+                    int(payload.get("message_id") or 0),
+                )
+        except Exception:
+            original = None
+        if original and original[0] and original[1]:
+            # The original failure notification is still
+            # in the chat; replace its body with the
+            # follow-up. The reply_markup is dropped so
+            # the operator can't double-click.
+            follow_up = result.get("message") or ""
+            if result.get("ok"):
+                suffix = "（新状态将通过下一条消息推送）"
+                follow_up = f"{follow_up}{suffix}"
+            try:
+                await app.edit_message_text(
+                    chat_id=original[0],
+                    message_id=original[1],
+                    text=follow_up or "重试中…",
+                )
+            except Exception:
+                # ``editMessageText`` raises on a deleted
+                # message, a permissions change, or a
+                # message that's too old. Fall back to a
+                # fresh reply so the operator still sees
+                # the result.
+                await callback_query.message.reply(follow_up or "重试中…")
+        else:
+            # No index in redis; the original message
+            # location is unknown (bot restarted between
+            # notification and click, or we just never
+            # stored it). Send a fresh reply so the
+            # operator isn't left hanging.
+            follow_up = result.get("message") or "重试中…"
+            try:
+                await callback_query.message.reply(follow_up)
+            except Exception:
+                pass
+        # ``answerCallbackQuery`` stops the button from
+        # spinning and shows the toast. ``show_alert``
+        # is reserved for failure toasts so the operator
+        # doesn't miss a 404 / 409.
+        if result.get("ok"):
+            await callback_query.answer(result.get("message") or "已重试")
+        else:
+            await callback_query.answer(
+                result.get("message") or "重试失败",
+                show_alert=True,
+            )
+
     # Boot the task-completion notifier. ``app.run`` blocks; the
     # daemon thread exits when the process dies.
     try:

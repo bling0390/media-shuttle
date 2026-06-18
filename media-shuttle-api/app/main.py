@@ -87,6 +87,57 @@ def get_task(task_id: str):
     return record.__dict__
 
 
+@app.post("/v1/tasks/{task_id}/retry", status_code=202)
+def retry_task(task_id: str, body: dict | None = None):
+    """Re-queue a failed task for the operator who owns it.
+
+    Backs the inline ``🔁 重试`` button on the Telegram
+    failure notification. ``requester_id`` is required —
+    it must match the requester stored on the original
+    task record, otherwise we return 404 (the same
+    response we'd give for a non-existent task_id, so we
+    do not leak whether the task exists under another
+    owner). ``phase`` is accepted for forward
+    compatibility (the inline button eventually wants to
+    retry just the download or just the upload) but the
+    current implementation always re-runs the whole
+    pipeline: the original local download may have been
+    cleaned up by the time the operator clicks the
+    button, and a partial re-run would have to recreate
+    the parser's source list from cache, which the
+    pipeline does not expose yet.
+    """
+    payload = body or {}
+    requester_id = str(payload.get("requester_id", "")).strip()
+    if not requester_id:
+        # 403 is a clearer signal than 404 for a missing
+        # operator id; the button click always supplies one
+        # (it comes from the original task.completed event
+        # that rendered the button), so a missing value
+        # here means a misconfigured client.
+        raise HTTPException(status_code=403, detail="requester_id required")
+    result = container.service.admin_retry_action(
+        mode="failed",
+        task_id=task_id,
+        requester_id=requester_id,
+    )
+    if not result.get("accepted"):
+        reason = result.get("reason", "unknown")
+        if reason == "task_not_found":
+            # Covers both the genuine 404 and the
+            # cross-operator mismatch: deliberately
+            # indistinguishable so we don't leak the
+            # existence of someone else's task.
+            raise HTTPException(status_code=404, detail="task not found")
+        if reason == "task_not_failed":
+            # Already retried / already running. 409 lets
+            # the bot show a "已重试过" message instead of
+            # an opaque 404.
+            raise HTTPException(status_code=409, detail="task not in FAILED state")
+        raise HTTPException(status_code=400, detail=reason)
+    return result
+
+
 @app.get("/v1/tasks")
 def list_tasks(status: str | None = None, limit: int = Query(default=20, ge=1, le=100)):
     items = container.service.list_tasks(status=status, limit=limit)

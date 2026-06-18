@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -9,6 +10,8 @@ from .queue import TaskPublisher
 from .repository import TaskRepository, WorkerRepository
 from .utils import make_idempotency_key
 from .worker_control import WorkerControl
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -55,6 +58,7 @@ class ApiService:
             url=request.url,
             target=request.target,
             destination=resolved_destination,
+            task_type="parse_link",
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -110,6 +114,7 @@ class ApiService:
             url=request.url,
             target=request.target,
             destination=resolved_destination,
+            task_type="parse_forum_thread",
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -367,10 +372,17 @@ class ApiService:
         }
 
     def _build_created_event(self, task: TaskRecord) -> dict:
+        # ``task_type`` is round-tripped from the original
+        # event so a forum task that was retried through
+        # this path lands back on the forum queue, not the
+        # single-link one. Records created before the
+        # ``task_type`` column existed default to
+        # ``parse_link`` on read, so legacy records still
+        # get a sensible envelope.
         return {
             "spec_version": "task.created.v1",
             "task_id": task.task_id,
-            "task_type": "parse_link",
+            "task_type": task.task_type or "parse_link",
             "idempotency_key": task.idempotency_key,
             "created_at": utc_now_iso(),
             "payload": {
@@ -381,12 +393,63 @@ class ApiService:
             },
         }
 
-    def admin_retry_action(self, mode: str, task_id: str | None = None, limit: int = 20) -> dict:
+    def admin_retry_action(
+        self,
+        mode: str,
+        task_id: str | None = None,
+        limit: int = 20,
+        requester_id: str | None = None,
+        is_admin: bool = False,
+    ) -> dict:
+        """Re-queue a single task (or batch of failed tasks).
+
+        ``requester_id`` is checked against the task's
+        ``requester_id`` when set: the operator who hit the
+        inline ``🔁 重试`` button on their own task is
+        allowed through, but a different operator (or a
+        non-admin who guessed someone else's task_id) is
+        rejected with ``reason="requester_mismatch"``. Pass
+        ``is_admin=True`` to skip the check — the dashboard
+        bulk-retry path needs to sweep across operators.
+
+        Idempotency: if the task is no longer in
+        ``FAILED`` (it was already retried, or it's still
+        in flight), we return ``accepted=False`` with
+        ``reason="task_not_failed"`` so a double-tap on the
+        Telegram button cannot duplicate the event in
+        redis.
+        """
         mode_key = (mode or "failed").strip().lower()
         max_limit = max(1, min(int(limit), 200))
 
         retried: list[str] = []
         skipped = 0
+
+        def _republish(task: TaskRecord) -> None:
+            # Reset the runtime state so the freshly re-queued
+            # event starts clean. ``update_status`` rewrites
+            # ``status`` + ``message`` + ``updated_at``; we
+            # follow up with a direct ``update_runtime_fields``
+            # for ``last_error`` so the failure reason from the
+            # previous run doesn't bleed into the next run's
+            # logs. ``sources`` and ``artifacts`` are kept —
+            # the new run will overwrite them on the first
+            # status update, and the operator can still see
+            # what was parsed last time while the new run is
+            # in flight.
+            self.repository.update_status(task.task_id, "QUEUED", "")
+            self.repository.update_runtime_fields(task.task_id, last_error="")
+            event = self._build_created_event(task)
+            if event.get("task_type") == "parse_forum_thread":
+                # Forum tasks live on their own queue so the
+                # dispatcher (not the parse-link handler)
+                # drains them. Republishing to
+                # ``task_created`` would deadlock the worker
+                # because no parse-link consumer is wired to
+                # call ``process_forum_thread_logic``.
+                self.publisher.publish_forum_event(event)
+            else:
+                self.publisher.publish_created_event(event)
 
         if task_id:
             task = self.repository.get(task_id)
@@ -399,6 +462,13 @@ class ApiService:
                     "retried": 0,
                     "skipped": 1,
                 }
+            # Re-read status after the read so a race
+            # between two operators hitting the button at
+            # the same instant does not cause two
+            # republishes. ``update_status`` is atomic in
+            # mongo (``$set`` on a single doc) so the
+            # second one will land on the already-QUEUED
+            # state and we just bail.
             if task.status != "FAILED":
                 return {
                     "mode": mode_key,
@@ -408,8 +478,31 @@ class ApiService:
                     "retried": 0,
                     "skipped": 1,
                 }
-            self.repository.update_status(task.task_id, "QUEUED", "")
-            self.publisher.publish_created_event(self._build_created_event(task))
+            if (
+                requester_id
+                and not is_admin
+                and str(requester_id).strip() != str(task.requester_id or "").strip()
+            ):
+                # Reject cross-operator retries. The
+                # ``task_not_found`` reason is the same one
+                # we'd return for a real 404, so the message
+                # doesn't leak whether the task exists
+                # under a different owner.
+                logger.warning(
+                    "retry rejected: requester mismatch task_id=%s expected=%s got=%s",
+                    task_id,
+                    task.requester_id,
+                    requester_id,
+                )
+                return {
+                    "mode": mode_key,
+                    "task_id": task_id,
+                    "accepted": False,
+                    "reason": "task_not_found",
+                    "retried": 0,
+                    "skipped": 1,
+                }
+            _republish(task)
             return {
                 "mode": mode_key,
                 "task_id": task_id,
@@ -417,6 +510,7 @@ class ApiService:
                 "retried": 1,
                 "skipped": 0,
                 "task_ids": [task.task_id],
+                "task_type": task.task_type or "parse_link",
             }
 
         if mode_key not in {"failed", "both"}:
@@ -433,8 +527,7 @@ class ApiService:
             if item.status != "FAILED":
                 skipped += 1
                 continue
-            self.repository.update_status(item.task_id, "QUEUED", "")
-            self.publisher.publish_created_event(self._build_created_event(item))
+            _republish(item)
             retried.append(item.task_id)
 
         return {

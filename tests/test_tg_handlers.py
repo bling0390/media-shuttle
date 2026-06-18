@@ -2,6 +2,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import httpx
+
 sys.path.insert(0, str(Path("media-shuttle-tg").resolve()))
 
 from tg.handlers import TgHandlers
@@ -40,6 +42,18 @@ class FakeApiClient:
     def admin_setting(self, **kwargs):
         self.calls.append(("admin_setting", kwargs))
         return {"accepted": True}
+
+    def retry_task(self, **kwargs):
+        # The default fake returns a successful retry
+        # so the bulk of the existing handler tests keep
+        # passing. The retry-specific tests below patch
+        # this method to return failures / raise.
+        self.calls.append(("retry_task", kwargs))
+        return {
+            "accepted": True,
+            "task_id": kwargs.get("task_id", ""),
+            "task_type": "parse_link",
+        }
 
     def cleanup_downloads(self, **kwargs):
         self.calls.append(("cleanup_downloads", kwargs))
@@ -156,6 +170,177 @@ class TestTgHandlers(unittest.TestCase):
         # Source counts default to 0 even when the api
         # didn't return them.
         self.assertIn("0", out)
+
+
+class TestRetryTaskHandler(unittest.TestCase):
+    """Cover ``on_retry_task_command`` (the inline 🔁 重试 button).
+
+    The handler is the seam between the bot's
+    CallbackQueryHandler and the api's
+    ``POST /v1/tasks/<task_id>/retry`` endpoint. Tests
+    focus on translating api responses into the small
+    dict the callback handler consumes, including the
+    cross-operator 404 / already-retried 409 branches
+    that the bot surfaces as toasts.
+    """
+
+    def test_missing_task_id_short_circuits(self):
+        api = FakeApiClient()
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="", requester_id="u-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "missing_task_id")
+        # ``retry_task`` must NOT be called when the
+        # task_id is empty — otherwise an empty string
+        # would be POSTed to ``/v1/tasks//retry`` and
+        # 404 from the api.
+        self.assertNotIn("retry_task", [name for name, _ in api.calls])
+
+    def test_missing_requester_short_circuits(self):
+        api = FakeApiClient()
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "missing_requester")
+        self.assertNotIn("retry_task", [name for name, _ in api.calls])
+
+    def test_successful_parse_link_retry(self):
+        # Forum tasks have their own follow-up copy; a
+        # single-link retry just shows "🔁 重试中…".
+        api = FakeApiClient()
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="u-1")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["code"], "accepted")
+        self.assertEqual(result["task_id"], "t-1")
+        self.assertEqual(result["task_type"], "parse_link")
+        self.assertIn("重试", result["message"])
+        # Confirm the api was hit with the requester_id
+        # the bot has in scope — not a server-derived
+        # one.
+        retry_calls = [c for c in api.calls if c[0] == "retry_task"]
+        self.assertEqual(len(retry_calls), 1)
+        self.assertEqual(retry_calls[0][1]["requester_id"], "u-1")
+        self.assertEqual(retry_calls[0][1]["task_id"], "t-1")
+
+    def test_successful_forum_retry_shows_specific_copy(self):
+        api = FakeApiClient()
+
+        def fake_retry_task(**kwargs):
+            api.calls.append(("retry_task", kwargs))
+            return {
+                "accepted": True,
+                "task_id": kwargs.get("task_id", ""),
+                "task_type": "parse_forum_thread",
+            }
+
+        api.retry_task = fake_retry_task
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-9", requester_id="u-1")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["task_type"], "parse_forum_thread")
+        self.assertIn("抓取", result["message"])
+
+    def test_404_translates_to_not_found(self):
+        # The api returns 404 for both a real missing
+        # task AND a cross-operator mismatch. The
+        # handler must surface them the same way so the
+        # bot never leaks whether someone else's task
+        # exists.
+        api = FakeApiClient()
+
+        def fake_retry_task(**kwargs):
+            api.calls.append(("retry_task", kwargs))
+            request = httpx.Request("POST", "http://test/v1/tasks/t-1/retry")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError(
+                "not found", request=request, response=response
+            )
+
+        api.retry_task = fake_retry_task
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="u-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "not_found")
+        self.assertIn("无权", result["message"])
+
+    def test_409_translates_to_already_retried(self):
+        # Two operators hitting the button at the same
+        # instant — the second one should see a clear
+        # "already retried" toast, not a generic 404.
+        api = FakeApiClient()
+
+        def fake_retry_task(**kwargs):
+            api.calls.append(("retry_task", kwargs))
+            request = httpx.Request("POST", "http://test/v1/tasks/t-1/retry")
+            response = httpx.Response(409, request=request)
+            raise httpx.HTTPStatusError(
+                "conflict", request=request, response=response
+            )
+
+        api.retry_task = fake_retry_task
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="u-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "already_retried")
+        self.assertIn("已重试", result["message"])
+
+    def test_403_translates_to_missing_requester(self):
+        api = FakeApiClient()
+
+        def fake_retry_task(**kwargs):
+            api.calls.append(("retry_task", kwargs))
+            request = httpx.Request("POST", "http://test/v1/tasks/t-1/retry")
+            response = httpx.Response(403, request=request)
+            raise httpx.HTTPStatusError(
+                "forbidden", request=request, response=response
+            )
+
+        api.retry_task = fake_retry_task
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="u-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "missing_requester")
+
+    def test_other_http_status_translates_to_http_error(self):
+        # 500s and the like should bubble up as an
+        # http_error so the operator knows it's not
+        # their fault.
+        api = FakeApiClient()
+
+        def fake_retry_task(**kwargs):
+            api.calls.append(("retry_task", kwargs))
+            request = httpx.Request("POST", "http://test/v1/tasks/t-1/retry")
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError(
+                "server error", request=request, response=response
+            )
+
+        api.retry_task = fake_retry_task
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="u-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "http_error")
+        self.assertIn("500", result["message"])
+
+    def test_unexpected_transport_error_is_caught(self):
+        # Connection errors, dns failures, etc. must
+        # not escape — the bot lives in an event loop
+        # and an uncaught exception would just log
+        # "Update is handled" without telling the
+        # operator anything.
+        api = FakeApiClient()
+
+        def fake_retry_task(**kwargs):
+            api.calls.append(("retry_task", kwargs))
+            raise RuntimeError("dns failure")
+
+        api.retry_task = fake_retry_task
+        handlers = TgHandlers(api)
+        result = handlers.on_retry_task_command(task_id="t-1", requester_id="u-1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "transport_error")
+        self.assertIn("dns failure", result["message"])
 
 
 if __name__ == "__main__":

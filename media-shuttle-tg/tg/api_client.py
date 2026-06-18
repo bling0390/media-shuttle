@@ -83,6 +83,28 @@ class ApiClient:
     def admin_retry(self, mode: str) -> dict:
         return self._request("POST", "/v1/admin/retry", body={"mode": mode})
 
+    def retry_task(self, task_id: str, requester_id: str) -> dict:
+        """Re-queue a single failed task.
+
+        Backs the inline ``🔁 重试`` button on the
+        Telegram failure notification. The api enforces
+        the ``requester_id`` match — if the operator who
+        clicked the button is not the original requester,
+        we get a 404 back, which the bot surfaces as a
+        short "task not found" toast.
+
+        We let ``httpx.HTTPStatusError`` propagate so the
+        caller's caller (the CallbackQueryHandler) can
+        read the status code and pick the right
+        user-facing message: 404 → "task not found", 409
+        → "already retried", 403 → "missing requester_id".
+        """
+        return self._request(
+            "POST",
+            f"/v1/tasks/{task_id}/retry",
+            body={"requester_id": requester_id},
+        )
+
     def admin_setting(self, key: str, value: str) -> dict:
         return self._request("POST", "/v1/admin/settings", body={"key": key, "value": value})
 

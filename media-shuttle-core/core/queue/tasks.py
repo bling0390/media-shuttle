@@ -463,6 +463,7 @@ def process_upload_result_logic(
             location="",
             reason=str(download_packet.get("reason") or ""),
             service=service,
+            phase="download",
         )
         return download_packet
 
@@ -510,6 +511,7 @@ def process_upload_result_logic(
             location="",
             reason=str(exc),
             service=service,
+            phase="upload",
         )
         return result
 
@@ -522,6 +524,7 @@ def _publish_per_source_notification(
     location: str,
     reason: str = "",
     service=None,
+    phase: str | None = None,
 ) -> None:
     """Push a per-file ``task.completed`` event to the tg subscriber.
 
@@ -531,6 +534,18 @@ def _publish_per_source_notification(
     callback in ``process_finalize_task_logic`` no longer
     publishes a summary; per-file notifications are the
     only signal the tg bot needs.
+
+    ``phase`` is set on failure paths so the tg bot can
+    render the correct retry button:
+
+    * ``"download"`` — the source could not be fetched.
+      Operator can re-trigger the download phase.
+    * ``"upload"`` — the file is on local disk, but the
+      uploader (rclone / telegram) refused it. Operator
+      can re-trigger the upload phase.
+
+    On success the field is omitted; the bot does not show
+    a retry button when the file made it through.
 
     Best-effort: the redis publish is wrapped in its own
     try/except so a redis hiccup never rolls the upload
@@ -604,21 +619,25 @@ def _publish_per_source_notification(
     except Exception:
         duration_seconds = 0
 
-    _publish_task_completed_event(
-        {
-            "task_id": task_id,
-            "requester_id": requester_id,
-            "file_name": file_name,
-            "size_bytes": size_bytes,
-            "location": location or "",
-            "source_site": source_site,
-            "duration_seconds": duration_seconds,
-            "ok": ok,
-            "target": target,
-            "reason": reason,
-            "spec_version": "task.completed.v1",
-        }
-    )
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "requester_id": requester_id,
+        "file_name": file_name,
+        "size_bytes": size_bytes,
+        "location": location or "",
+        "source_site": source_site,
+        "duration_seconds": duration_seconds,
+        "ok": ok,
+        "target": target,
+        "reason": reason,
+        "spec_version": "task.completed.v1",
+    }
+    if phase:
+        # The tg bot uses this to decide which inline retry
+        # button to attach. ``download`` → 🔁 重试下载;
+        # ``upload`` → 🔁 重试上传. Omitted on success.
+        payload["phase"] = phase
+    _publish_task_completed_event(payload)
 
 
 def _publish_forum_fanout_events(events, service):
@@ -802,12 +821,76 @@ def process_forum_thread_logic(event, app, service=None):
                 service.repository.update_runtime_fields(task_id, last_error=str(exc))
             except Exception:
                 pass
+            # The forum dispatcher does not fan out per-file
+            # tasks of its own (it pushes ``parse_link``
+            # events into ``task_created``), so a failure
+            # here would otherwise leave the operator in the
+            # dark — no per-file notification fires, and the
+            # only state change is the mongo ``FAILED``
+            # record. Emit a task-level ``task.completed``
+            # event so the tg bot can surface a retry button
+            # for the whole forum scrape.
+            try:
+                _publish_forum_failed_notification(
+                    task_id=task_id, reason=str(exc), service=service, event=event
+                )
+            except Exception:
+                # Best-effort: a redis hiccup must not roll
+                # back the task that just failed.
+                logger.exception(
+                    f"forum failure notification publish failed task_id={task_id}"
+                )
         logger.exception(f"forum task failed task_id={task_id or '-'} reason={exc}")
         return {
             "state": "failed",
             "task_id": task_id,
             "reason": str(exc),
         }
+
+
+def _publish_forum_failed_notification(
+    task_id: str, reason: str, service, event: dict[str, Any]
+) -> None:
+    """Emit a task-level ``task.completed`` event when the
+    forum dispatcher fails. Mirrors the per-file
+    ``_publish_per_source_notification`` shape so the tg
+    notifier can render it through the same code path.
+    """
+    requester_id = ""
+    payload = ((event or {}).get("payload") or {}) if event else {}
+    requester_id = str(payload.get("requester_id") or "").strip()
+    if not requester_id and service is not None:
+        try:
+            doc = service.repository.get(task_id)
+            if doc is not None:
+                doc_payload = getattr(doc, "payload", None)
+                if doc_payload is not None:
+                    requester_id = str(
+                        getattr(doc_payload, "requester_id", "") or ""
+                    ).strip()
+        except Exception:
+            pass
+    if not requester_id:
+        logger.info(
+            f"forum failure notification skipped (no requester_id) task_id={task_id}"
+        )
+        return
+    _publish_task_completed_event(
+        {
+            "task_id": task_id,
+            "requester_id": requester_id,
+            "file_name": "[forum]",
+            "size_bytes": 0,
+            "location": "",
+            "source_site": "forum",
+            "duration_seconds": 0,
+            "ok": False,
+            "target": "RCLONE",
+            "reason": reason,
+            "phase": "forum",
+            "spec_version": "task.completed.v1",
+        }
+    )
 
 
 def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dict[str, Any], task_id: str, app, service=None) -> dict:

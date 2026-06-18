@@ -57,6 +57,32 @@ try:
 except Exception:  # pragma: no cover
     ParseMode = None
 
+try:
+    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+except Exception:  # pragma: no cover
+    InlineKeyboardButton = None
+    InlineKeyboardMarkup = None
+
+
+# Callback data prefix for the inline retry button. The
+# full payload is ``retry_<phase>:<task_id>`` where phase is
+# one of ``dl`` (download), ``ul`` (upload), or ``fr``
+# (forum re-scrape). 64 bytes is Telegram's hard cap on
+# callback_data; with a 36-char uuid task_id we're at 48,
+# well under the limit.
+_RETRY_PREFIX = "retry_"
+
+# Redis key used to look up the (chat_id, message_id) of
+# the failure notification when a retry button is clicked,
+# so the callback handler can edit the original message in
+# place. 30 days covers the worst case where the operator
+# comes back to a failed task after a long weekend.
+_RETRY_MSG_TTL_SECONDS = 30 * 24 * 3600
+
+
+def _retry_msg_key(task_id: str) -> str:
+    return f"media_shuttle:tg:retry_msg:{task_id}"
+
 logger = logging.getLogger("media_shuttle.tg.notifier")
 
 # Default key; overridden by MEDIA_SHUTTLE_NOTIFICATION_QUEUE_KEY
@@ -152,14 +178,7 @@ def _format_notification(event: dict[str, Any]) -> str:
     # Treat missing as success (the legacy finalize summary
     # never set the field, and we want to stay compatible with
     # any pre-existing buffered events on the redis queue).
-    ok = event.get("ok", True)
-    ok = bool(ok) if not isinstance(ok, str) else ok.strip().lower() not in {
-        "false",
-        "0",
-        "no",
-        "fail",
-        "failed",
-    }
+    ok = _parse_ok(event.get("ok", True))
     reason = str(event.get("reason") or "")
 
     style = os.getenv("TG_NOTIFY_STYLE", "box").strip().lower()
@@ -170,6 +189,127 @@ def _format_notification(event: dict[str, Any]) -> str:
     if style == "kv":
         return _format_kv(name, size, source, location, duration, ok=ok, reason=reason)
     return _format_box(name, size, source, location, duration, ok=ok, reason=reason)
+
+
+def _build_retry_button(event: dict[str, Any]) -> dict[str, str] | None:
+    """Return the inline button spec for a failed event, or
+    ``None`` if the event is a success / has no actionable
+    retry.
+
+    The button is the operator's manual escape hatch when
+    the auto-retry budget (see
+    ``MEDIA_SHUTTLE_MAX_RETRIES`` in core) is exhausted.
+    On click, the bot calls
+    ``POST /v1/tasks/<task_id>/retry`` to re-queue the
+    whole pipeline; a partial re-run (just the download,
+    or just the upload) is not implemented yet because the
+    local file may have been cleaned up by then.
+
+    The ``phase`` field on the event drives the button
+    label and callback so the operator sees the right
+    action:
+
+    * ``"download"`` — the source could not be fetched.
+    * ``"upload"`` — the file is on local disk, but the
+      uploader refused it.
+    * ``"forum"`` — the forum dispatcher crashed before
+      it could fan out per-file events.
+
+    The callback payload is ``retry_<phase>:<task_id>``;
+    the bot's CallbackQueryHandler parses the prefix to
+    route to the right code path.
+    """
+    if event.get("ok", True):
+        # Default to success (the legacy finalize summary
+        # never set ``ok`` and we want to stay compatible
+        # with buffered events from older publishers).
+        return None
+    phase = str(event.get("phase") or "").strip().lower()
+    task_id = str(event.get("task_id") or "").strip()
+    if not phase or not task_id:
+        return None
+    if phase == "download":
+        label = "🔁 重试下载"
+        token = "dl"
+    elif phase == "upload":
+        label = "🔁 重试上传"
+        token = "ul"
+    elif phase == "forum":
+        # Forum tasks don't have a single file the
+        # operator can re-fetch or re-upload; the only
+        # meaningful action is to re-walk the thread.
+        label = "🔁 重试抓取"
+        token = "fr"
+    else:
+        # Unknown phase — surface the button anyway with
+        # a generic label so a future phase doesn't strand
+        # the operator without an escape hatch.
+        label = "🔁 重试"
+        token = "all"
+    return {
+        "text": label,
+        "callback_data": f"{_RETRY_PREFIX}{token}:{task_id}",
+    }
+
+
+def _build_retry_markup(event: dict[str, Any]):
+    """Wrap ``_build_retry_button`` in a one-row markup
+    suitable for ``reply_markup=`` on ``send_message``.
+
+    Returns ``None`` when the event has no retry button
+    (success path) so the caller can pass the result
+    straight through to pyrogram without a conditional.
+    """
+    button = _build_retry_button(event)
+    if button is None:
+        return None
+    if InlineKeyboardButton is None or InlineKeyboardMarkup is None:
+        # The pyrogram import is gated above; if it
+        # failed at import time (e.g. running under unit
+        # tests that mock pyrogram out) we silently skip
+        # the markup so the notification still goes out
+        # without a button rather than failing the send.
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(button["text"], callback_data=button["callback_data"])]]
+    )
+
+
+def _store_retry_msg_index(task_id: str, chat_id: int, message_id: int) -> None:
+    """Persist the (chat_id, message_id) of a failure
+    notification so the CallbackQueryHandler can edit the
+    original message when the operator clicks the retry
+    button.
+
+    Best-effort: a redis hiccup here only loses the
+    edit-in-place ability; the button itself still works
+    and the operator will get a fresh status message from
+    the next task.completed event. We log and move on.
+    """
+    if not task_id or not message_id:
+        return
+    try:
+        import redis
+
+        client = redis.Redis.from_url(_redis_url())
+        payload = json.dumps({"chat_id": int(chat_id), "message_id": int(message_id)})
+        client.set(_retry_msg_key(task_id), payload, ex=_RETRY_MSG_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"retry msg index store failed task_id={task_id} reason={exc}"
+        )
+
+
+def _parse_ok(value: Any) -> bool:
+    """Normalize an event's ``ok`` field to a bool.
+
+    Mirrors the inline branch in ``_format_notification``
+    so the retry-button builder and the formatter agree on
+    what "failed" means. Public for unit tests.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "fail", "failed"}
+    return bool(value)
 
 
 def _format_kv(
@@ -389,6 +529,18 @@ class TaskCompletedNotifier:
             if (ParseMode is not None and text.lstrip().startswith("<pre>"))
             else None
         )
+        retry_markup = _build_retry_markup(event)
+        # If a retry button is attached, capture the
+        # (chat_id, message_id) of the message we are about
+        # to send so the CallbackQueryHandler can edit the
+        # original failure notification in place when the
+        # operator clicks. We do this *before* the await
+        # because the message_id is only known after the
+        # send returns, and we want to schedule the redis
+        # write from inside the same coroutine so the index
+        # is consistent with the message that was actually
+        # delivered.
+        should_index = retry_markup is not None and bool(event.get("task_id"))
         try:
             # pyrogram 2.0.x exposes ``send_message`` as a sync
             # wrapper that internally drives its own event loop.
@@ -398,10 +550,40 @@ class TaskCompletedNotifier:
             # itself is the coroutine-under-the-hood and is what
             # the wrapper awaits, so this is the documented path.
             async def _send() -> None:
-                if parse_mode is not None:
-                    await self._app.send_message(chat_id, text, parse_mode=parse_mode)
+                if parse_mode is not None and retry_markup is not None:
+                    sent = await self._app.send_message(
+                        chat_id,
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=retry_markup,
+                    )
+                elif parse_mode is not None:
+                    sent = await self._app.send_message(
+                        chat_id, text, parse_mode=parse_mode
+                    )
+                elif retry_markup is not None:
+                    sent = await self._app.send_message(
+                        chat_id, text, reply_markup=retry_markup
+                    )
                 else:
-                    await self._app.send_message(chat_id, text)
+                    sent = await self._app.send_message(chat_id, text)
+                if should_index:
+                    # ``sent`` is a ``Message``; its ``id`` is
+                    # the per-chat message id we need for
+                    # ``editMessageText`` later. Wrap the
+                    # redis write in its own try/except so a
+                    # write failure does not roll back the
+                    # notification.
+                    try:
+                        _store_retry_msg_index(
+                            str(event.get("task_id") or ""),
+                            int(getattr(sent, "chat", chat_id).id or chat_id),
+                            int(getattr(sent, "id", 0) or 0),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            f"retry msg index store failed task_id={event.get('task_id')} reason={exc}"
+                        )
 
             future = asyncio.run_coroutine_threadsafe(_send(), self._loop)
             future.add_done_callback(self._on_send_done)

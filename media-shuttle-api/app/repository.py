@@ -25,6 +25,9 @@ class TaskRepository:
     def update_status(self, task_id: str, status: str, message: str = "") -> TaskRecord | None:
         raise NotImplementedError
 
+    def update_runtime_fields(self, task_id: str, **fields) -> TaskRecord | None:
+        raise NotImplementedError
+
 
 class WorkerRepository:
     def upsert(self, record: WorkerRecord) -> WorkerRecord:
@@ -78,6 +81,20 @@ class InMemoryTaskRepository(TaskRepository):
             item.message = message
             item.updated_at = utc_now_iso()
             return replace(item)
+
+    def update_runtime_fields(self, task_id: str, **fields) -> TaskRecord | None:
+        with self._lock:
+            item = self._items.get(task_id)
+            if not item:
+                return None
+            current = asdict(item)
+            for key, value in fields.items():
+                if value is not None:
+                    current[key] = value
+            current["updated_at"] = utc_now_iso()
+            updated = TaskRecord(**current)
+            self._items[task_id] = replace(updated)
+            return replace(updated)
 
 
 class InMemoryWorkerRepository(WorkerRepository):
@@ -144,6 +161,12 @@ class MongoTaskRepository(TaskRepository):
             "url": record.url,
             "target": record.target,
             "destination": record.destination,
+            # See ``TaskRecord.task_type`` — older records
+            # (pre-task-type) just don't have this key in
+            # mongo; we fall back to ``parse_link`` on
+            # read so the retry path keeps working without
+            # a migration.
+            "task_type": record.task_type,
             "message": record.message,
             "sources": list(record.sources),
             "artifacts": list(record.artifacts),
@@ -164,6 +187,8 @@ class MongoTaskRepository(TaskRepository):
             url=doc["url"],
             target=doc["target"],
             destination=doc["destination"],
+            # ``task_type`` is new; old docs have no key.
+            task_type=doc.get("task_type") or "parse_link",
             message=doc.get("message", ""),
             sources=[item for item in doc.get("sources", []) if isinstance(item, dict)],
             artifacts=[item for item in doc.get("artifacts", []) if isinstance(item, dict)],
@@ -232,6 +257,29 @@ class MongoTaskRepository(TaskRepository):
         self._collection.update_one(
             {"_id": task_id},
             {"$set": {"status": status, "message": message, "updated_at": updated_at}},
+        )
+        return self.get(task_id)
+
+    def update_runtime_fields(self, task_id: str, **fields) -> TaskRecord | None:
+        """Patch a TaskRecord in place without touching
+        ``status`` / ``message``.
+
+        Used by the admin retry path so we can wipe
+        ``last_error`` from the previous failed run before
+        the new event lands, without rewriting
+        ``status`` (which is a separate atomic op so two
+        operators hitting the retry button at the same
+        instant see a consistent state). ``updated_at``
+        is bumped automatically so the dashboard
+        reflects the new run.
+        """
+        if not fields:
+            return self.get(task_id)
+        payload = {key: value for key, value in fields.items()}
+        payload["updated_at"] = utc_now_iso()
+        self._collection.update_one(
+            {"_id": task_id},
+            {"$set": payload},
         )
         return self.get(task_id)
 

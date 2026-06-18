@@ -58,6 +58,16 @@ class TaskRecord:
     url: str
     target: str
     destination: str
+    # ``task_type`` is the originating event type:
+    # ``parse_link`` for single-file jobs and
+    # ``parse_forum_thread`` for XenForo scrape jobs.
+    # Stored on the record so admin-retry can rebuild the
+    # correct ``task.created.v1`` payload — the retry
+    # path is the only consumer that needs the original
+    # type, so we keep the field optional and default
+    # to ``parse_link`` for records created before the
+    # field existed.
+    task_type: str = "parse_link"
     message: str = ""
     sources: list[dict] = field(default_factory=list)
     artifacts: list[dict] = field(default_factory=list)

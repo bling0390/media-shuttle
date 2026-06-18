@@ -22,6 +22,9 @@ from tg.notifier import (
     _format_kv,
     _format_notification,
     _truncate,
+    _build_retry_button,
+    _build_retry_markup,
+    _parse_ok,
 )
 
 
@@ -333,6 +336,137 @@ class NotificationFieldRenderingTests(unittest.TestCase):
             {"file_name": "x.mp4", "size_bytes": 1024, "ok": True}
         )
         self.assertIn("状态：✅ 上传成功", out)
+
+
+class RetryButtonTests(unittest.TestCase):
+    """Cover the inline retry button on failure notifications.
+
+    The button is the operator's manual escape hatch when
+    the auto-retry budget is exhausted (see
+    ``MEDIA_SHUTTLE_MAX_RETRIES`` in core). Each test
+    below pins one branch of the phase-to-label mapping.
+    """
+
+    def test_success_event_has_no_retry_button(self):
+        # A successful upload must not render a retry
+        # button — it would just tempt the operator to
+        # re-run a task that already finished.
+        button = _build_retry_button(
+            {"file_name": "x.mp4", "size_bytes": 1024, "ok": True, "task_id": "t-1"}
+        )
+        self.assertIsNone(button)
+
+    def test_missing_ok_treated_as_success(self):
+        # Legacy events buffered on the redis queue from
+        # an older publisher may not set ``ok``. We treat
+        # those as success so the operator does not get a
+        # spurious retry button on a finalized event.
+        button = _build_retry_button({"file_name": "x.mp4", "task_id": "t-1"})
+        self.assertIsNone(button)
+
+    def test_download_failure_renders_dl_button(self):
+        button = _build_retry_button(
+            {
+                "file_name": "x.mp4",
+                "ok": False,
+                "phase": "download",
+                "task_id": "t-1",
+                "reason": "bunkr 404",
+            }
+        )
+        self.assertIsNotNone(button)
+        self.assertEqual(button["text"], "🔁 重试下载")
+        self.assertEqual(button["callback_data"], "retry_dl:t-1")
+
+    def test_upload_failure_renders_ul_button(self):
+        button = _build_retry_button(
+            {
+                "file_name": "x.mp4",
+                "ok": False,
+                "phase": "upload",
+                "task_id": "t-2",
+                "reason": "rclone connection reset",
+            }
+        )
+        self.assertIsNotNone(button)
+        self.assertEqual(button["text"], "🔁 重试上传")
+        self.assertEqual(button["callback_data"], "retry_ul:t-2")
+
+    def test_forum_failure_renders_forum_button(self):
+        # Forum tasks use a different label because the
+        # action is "re-walk the thread", not
+        # "re-fetch a single file".
+        button = _build_retry_button(
+            {
+                "file_name": "[forum]",
+                "ok": False,
+                "phase": "forum",
+                "task_id": "t-3",
+                "reason": "lxml parse error",
+            }
+        )
+        self.assertIsNotNone(button)
+        self.assertEqual(button["text"], "🔁 重试抓取")
+        self.assertEqual(button["callback_data"], "retry_fr:t-3")
+
+    def test_unknown_phase_renders_generic_button(self):
+        # Future phase types should still get a button so
+        # the operator is never stranded without an
+        # escape hatch. We use the ``all`` callback token
+        # so the bot can fall back to the default handler
+        # without parsing a phase it doesn't recognize.
+        button = _build_retry_button(
+            {"file_name": "x.mp4", "ok": False, "phase": "warp_drive", "task_id": "t-4"}
+        )
+        self.assertIsNotNone(button)
+        self.assertEqual(button["text"], "🔁 重试")
+        self.assertEqual(button["callback_data"], "retry_all:t-4")
+
+    def test_missing_phase_or_task_id_skips_button(self):
+        # We need both pieces of routing info to wire
+        # the button correctly. Missing either drops the
+        # button rather than rendering one that would
+        # 404 on click.
+        self.assertIsNone(
+            _build_retry_button({"file_name": "x.mp4", "ok": False, "task_id": "t-5"})
+        )
+        self.assertIsNone(
+            _build_retry_button(
+                {"file_name": "x.mp4", "ok": False, "phase": "download"}
+            )
+        )
+
+    def test_callback_data_stays_under_telegram_64_byte_limit(self):
+        # Telegram caps callback_data at 64 bytes. A
+        # full-length uuid (36 chars) plus the prefix
+        # (8 chars) is 48 bytes — well under — but we
+        # pin the budget in case the prefix grows in
+        # the future.
+        task_id = "abcdef01-2345-6789-abcd-ef0123456789"
+        button = _build_retry_button(
+            {"file_name": "x.mp4", "ok": False, "phase": "upload", "task_id": task_id}
+        )
+        self.assertIsNotNone(button)
+        self.assertLessEqual(len(button["callback_data"].encode("utf-8")), 64)
+
+    def test_build_retry_markup_returns_none_for_success(self):
+        # The pyrogram layer expects ``None`` (not an
+        # empty markup) when there's no button so the
+        # kwarg is dropped on the call site.
+        self.assertIsNone(_build_retry_markup({"file_name": "x.mp4", "ok": True}))
+
+    def test_parse_ok_handles_string_truthy_variants(self):
+        # The redis buffer can deserialize a string
+        # ``"false"`` or ``"0"`` if a publisher writes
+        # one. We treat those the same as Python
+        # ``False``.
+        self.assertTrue(_parse_ok(True))
+        self.assertTrue(_parse_ok("true"))
+        self.assertTrue(_parse_ok("yes"))
+        self.assertFalse(_parse_ok(False))
+        self.assertFalse(_parse_ok("false"))
+        self.assertFalse(_parse_ok("0"))
+        self.assertFalse(_parse_ok("failed"))
 
 
 if __name__ == "__main__":

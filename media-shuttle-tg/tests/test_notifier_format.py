@@ -25,6 +25,7 @@ from tg.notifier import (
     _build_retry_button,
     _build_retry_markup,
     _parse_ok,
+    _status_label,
 )
 
 
@@ -467,6 +468,105 @@ class RetryButtonTests(unittest.TestCase):
         self.assertFalse(_parse_ok("false"))
         self.assertFalse(_parse_ok("0"))
         self.assertFalse(_parse_ok("failed"))
+
+
+class DedupeStatusLabelTests(unittest.TestCase):
+    """The dedupe feature adds a third per-file state:
+    the file made it to 115 via a *previous* run, the
+    current run reused the old location, and the
+    operator should see a "skipped" mark rather than
+    a misleading "upload succeeded" check.
+
+    These tests pin the three-state contract so a
+    future refactor of ``_status_label`` cannot
+    silently collapse dedupe into either ✅ or ❌.
+    """
+
+    def test_success_without_phase_renders_check(self):
+        # A normal successful upload (no ``phase``)
+        # is still rendered as "✅ 上传成功".
+        self.assertEqual(_status_label(True), "✅ 上传成功")
+        self.assertEqual(_status_label(True, phase=""), "✅ 上传成功")
+
+    def test_failure_renders_cross(self):
+        self.assertEqual(_status_label(False), "❌ 上传失败")
+        # ``phase`` does not override the failure
+        # state; a failed download + a failed upload
+        # both still show "❌ 上传失败" because the
+        # operator needs to act on them.
+        self.assertEqual(_status_label(False, phase="download"), "❌ 上传失败")
+        self.assertEqual(_status_label(False, phase="upload"), "❌ 上传失败")
+
+    def test_dedupe_phase_renders_skip_marker(self):
+        # The whole point of the dedupe feature: the
+        # notification must read as a skip, not a
+        # success, so the operator can tell at a
+        # glance which files were actually
+        # downloaded this run.
+        self.assertEqual(
+            _status_label(True, phase="dedupe"),
+            "⏭️ 已跳过（dedupe）",
+        )
+
+    def test_kv_renderer_uses_dedupe_label(self):
+        # Pin the kv-style formatter too: it must
+        # surface the dedupe label, not the success
+        # check, when ``phase=dedupe``.
+        out = _format_kv(
+            name="a.mp4",
+            size=1234,
+            source="bunkr",
+            location="115:/album/a.mp4",
+            duration="",
+            ok=True,
+            phase="dedupe",
+        )
+        self.assertIn("⏭️ 已跳过（dedupe）", out)
+
+    def test_box_renderer_uses_dedupe_label(self):
+        out = _format_box(
+            name="a.mp4",
+            size=1234,
+            source="bunkr",
+            location="115:/album/a.mp4",
+            duration="",
+            ok=True,
+            phase="dedupe",
+        )
+        self.assertIn("⏭️ 已跳过（dedupe）", out)
+
+    def test_format_notification_kv_dedupe(self):
+        # The dispatch helper must propagate
+        # ``phase`` into the renderer so the
+        # operator's TG_NOTIFY_STYLE switch does
+        # not break the dedupe label.
+        _set_style("kv")
+        out = _format_notification(
+            {
+                "file_name": "a.mp4",
+                "size_bytes": 1234,
+                "ok": True,
+                "phase": "dedupe",
+                "location": "115:/album/a.mp4",
+            }
+        )
+        self.assertIn("⏭️ 已跳过（dedupe）", out)
+
+    def test_dedupe_event_has_no_retry_button(self):
+        # A dedupe skip is not retryable: the file
+        # is already on 115, there is nothing to
+        # retry. Pin the contract so a future
+        # refactor cannot accidentally attach a
+        # retry button to a skip notification.
+        button = _build_retry_button(
+            {
+                "file_name": "a.mp4",
+                "ok": True,
+                "phase": "dedupe",
+                "task_id": "t-1",
+            }
+        )
+        self.assertIsNone(button)
 
 
 if __name__ == "__main__":

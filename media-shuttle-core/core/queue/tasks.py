@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import socket
@@ -367,6 +369,36 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
         parsed_sources = service.pipeline.parser_registry.parse(payload.url)
         if not parsed_sources:
             raise ValueError("no parsed source found")
+
+        # Per-file dedupe: drop sources that have already
+        # been uploaded within the configured TTL. We do
+        # this after parsing so the operator gets one
+        # notification per skipped file (rather than a
+        # silent gap), and *before* the mongo
+        # ``update_runtime_fields`` so the stored
+        # ``sources`` array matches the work that was
+        # actually scheduled.
+        new_sources: list[ParsedSource] = []
+        skipped_sources: list[dict[str, Any]] = []
+        for source in parsed_sources:
+            source_dict = asdict(source)
+            existing = _dedupe_lookup(source_dict)
+            if existing is None:
+                new_sources.append(source)
+                continue
+            skipped_sources.append(
+                {
+                    "source": source_dict,
+                    "location": str(existing.get("location") or ""),
+                    "previous_task_id": str(existing.get("task_id") or ""),
+                }
+            )
+        if skipped_sources:
+            logger.info(
+                f"dedupe skipped task_id={task_id} skipped={len(skipped_sources)} "
+                f"new={len(new_sources)}"
+            )
+
         service.repository.update_runtime_fields(
             task_id,
             sources=[_source_snapshot(asdict(source)) for source in parsed_sources],
@@ -374,11 +406,53 @@ def process_created_event_logic(event: dict[str, Any], app, service=None) -> dic
             last_error="",
         )
 
+        # When every source was deduplicated, the task
+        # has no work to do. Mark it SUCCEEDED and emit a
+        # per-file skipped notification for each
+        # dedupe hit, so the operator's chat shows the
+        # same shape as a successful album (one row
+        # per file, ⏭️ instead of ✅) and the
+        # ``/monitor`` count does not hang in
+        # ``DOWNLOADING`` until a timeout.
+        if not new_sources:
+            service.repository.update_status(
+                task_id,
+                TaskStatus.SUCCEEDED,
+                message=f"all {len(skipped_sources)} source(s) dedupe-skipped",
+            )
+            for entry in skipped_sources:
+                _publish_dedupe_skip_notification(
+                    task_id=task_id,
+                    source=entry["source"],
+                    location=entry["location"],
+                    service=service,
+                )
+            return {
+                "state": "succeeded",
+                "task_id": task_id,
+                "attempt": int(event.get("attempt", 0)),
+                "source_count": 0,
+                "skipped_count": len(skipped_sources),
+                "message": "all sources dedupe-skipped",
+            }
+
         service.repository.update_status(task_id, TaskStatus.DOWNLOADING)
+        # Skipped sources still need a notification so
+        # the operator sees the file was processed
+        # (just not re-downloaded). Emit before fanning
+        # out so the timeline reads naturally: skip →
+        # upload, even when uploads are async.
+        for entry in skipped_sources:
+            _publish_dedupe_skip_notification(
+                task_id=task_id,
+                source=entry["source"],
+                location=entry["location"],
+                service=service,
+            )
         immediate_result = _schedule_source_pipelines(
             event=event,
             task_id=task_id,
-            parsed_sources=parsed_sources,
+            parsed_sources=new_sources,
             target=payload.target,
             destination=payload.destination,
             app=app,
@@ -484,6 +558,23 @@ def process_upload_result_logic(
             "task_id": task_id,
             "event": download_packet.get("event"),
         }
+        # Persist the (album + file_name) → location
+        # mapping so a future re-leech of the same link
+        # short-circuits the download + upload. We use
+        # the source dict the parser produced (site,
+        # remote_folder, file_name) as the identity
+        # basis, not the downloaded file path, so the
+        # dedupe survives bunkr mirror domain changes.
+        try:
+            _dedupe_write(
+                dict(download_packet.get("source") or {}),
+                task_id=task_id,
+                location=upload.location,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"dedupe write raised (non-fatal) task_id={task_id} reason={exc}"
+            )
         _publish_per_source_notification(
             download_packet=download_packet,
             task_id=task_id,
@@ -514,6 +605,236 @@ def process_upload_result_logic(
             phase="upload",
         )
         return result
+
+
+# ---------------------------------------------------------------------------
+# Dedupe store
+# ---------------------------------------------------------------------------
+#
+# Backs the per-file dedupe feature: if the same album + file name has
+# been successfully uploaded within ``MEDIA_SHUTTLE_DEDUPE_TTL_DAYS``
+# (default 30), re-leeching the same link short-circuits the
+# download + upload for that file and reuses the previous
+# ``rclone`` location. The dedupe key is
+# ``md5(site|remote_folder|file_name)`` so the same physical file is
+# deduplicated across bunkr mirror domains, cdn / page URL changes,
+# and operator boundaries.
+#
+# Storage: Redis. We picked redis over mongo because the read path
+# is hot (every parse hits the dedupe once per source) and the TTL
+# is short enough that the on-disk size stays bounded by the
+# upload rate. A mongo collection would also work but the indexes
+# would need the same compound key, and TTL cleanup is friendlier
+# in redis (``SETEX``).
+#
+# Failure modes: every redis call is wrapped in try/except so a
+# redis hiccup does not roll back a task. On a redis read failure
+# we *fail open* — treat the source as not-deduplicated and let the
+# normal download proceed. Better to upload twice than to silently
+# drop a file the operator wanted.
+
+
+def _dedupe_ttl_seconds() -> int:
+    """Read ``MEDIA_SHUTTLE_DEDUPE_TTL_DAYS`` from the
+    environment with a 30-day default.
+
+    Returns seconds so the redis ``SETEX`` call accepts it
+    directly. A misconfigured non-int env value falls back
+    to 30 days so an operator typo never accidentally
+    disables dedupe (a 0-TTL key would expire
+    immediately, defeating the whole feature).
+    """
+    raw = os.getenv("MEDIA_SHUTTLE_DEDUPE_TTL_DAYS", "30").strip()
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        days = 30
+    if days < 1:
+        days = 30
+    return days * 86400
+
+
+def _dedupe_redis_url() -> str:
+    """Reuse the operator-configured redis URL.
+
+    Falls back to the same default the notifier uses so
+    core can run in dev environments that only set
+    ``MEDIA_SHUTTLE_REDIS_URL`` for the bot.
+    """
+    return os.getenv("MEDIA_SHUTTLE_REDIS_URL", "redis://localhost:6379/0")
+
+
+def _dedupe_key_for(source: dict[str, Any]) -> str:
+    """Build the md5 key used to look up a previously-uploaded
+    version of this file.
+
+    Inputs (in priority order):
+      1. ``site`` + ``remote_folder`` + ``file_name`` — the
+         full triple. This is what the user described
+         (album + file name) and is the most stable
+         identifier: bunkr mirror domains all resolve to
+         the same folder on the upstream, and the file
+         name is the file's own identity.
+      2. ``site`` + ``page_url`` + ``file_name`` — for
+         parsers that do not populate ``remote_folder``
+         (single-file pages on pixeldrain, gd, etc.).
+         Falling back to the page URL keeps a single
+         file deduplicated across repeat-leech but
+         cross-domain dedup is not possible without
+         the folder.
+
+    Components are joined with a non-printable separator
+    (NUL, ``\x00``) so a hostile album name like
+    ``"a|b"`` cannot collide with a different file
+    whose components hash to the same string.
+    """
+    site = str(source.get("site") or "").strip().lower()
+    folder = source.get("remote_folder")
+    if folder is not None and str(folder).strip():
+        identity = f"{site}\x00{str(folder).strip()}\x00{str(source.get('file_name') or '').strip()}"
+    else:
+        identity = f"{site}\x00{str(source.get('page_url') or '').strip()}\x00{str(source.get('file_name') or '').strip()}"
+    return "media_shuttle:dedupe:" + hashlib.md5(identity.encode("utf-8")).hexdigest()
+
+
+def _dedupe_lookup(source: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the stored dedupe record for this source, or
+    ``None`` on miss / on any redis failure.
+
+    The record is the JSON we wrote in ``_dedupe_write``:
+    ``{"task_id": ..., "location": ..., "uploaded_at": ...}``.
+    A malformed entry (someone wrote raw text into the
+    key) is treated as a miss so a stray
+    ``redis-cli SET media_shuttle:dedupe:foo bar`` cannot
+    brick the dedupe path forever.
+    """
+    key = _dedupe_key_for(source)
+    try:
+        import redis
+
+        client = redis.Redis.from_url(_dedupe_redis_url())
+        raw = client.get(key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"dedupe lookup failed key={key} reason={exc}")
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("location"):
+        return None
+    return data
+
+
+def _dedupe_write(source: dict[str, Any], task_id: str, location: str) -> None:
+    """Persist the (key → location) mapping so future
+    re-leeches of the same file can short-circuit.
+
+    Called from ``process_upload_result_logic`` on the
+    *success* path only — a failed upload must never
+    enter the dedupe store, otherwise the next attempt
+    would see a phantom "already uploaded" entry with
+    no real file behind it.
+
+    Best-effort: a redis hiccup here only loses the
+    future dedupe hit for this file; the current upload
+    has already finished, so we log and move on rather
+    than rolling back the result.
+    """
+    if not location:
+        return
+    key = _dedupe_key_for(source)
+    payload = json.dumps(
+        {
+            "task_id": task_id,
+            "location": location,
+            "uploaded_at": _utc_now_iso(),
+        }
+    )
+    try:
+        import redis
+
+        client = redis.Redis.from_url(_dedupe_redis_url())
+        client.set(key, payload, ex=_dedupe_ttl_seconds())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"dedupe write failed key={key} reason={exc}")
+
+
+def _publish_dedupe_skip_notification(
+    task_id: str,
+    source: dict[str, Any],
+    location: str,
+    service=None,
+) -> None:
+    """Push a per-file ``task.completed`` event for a
+    dedupe-skipped source so the operator's tg chat and
+    the per-file artifact list both show the file as
+    handled (not silently dropped).
+
+    The shape mirrors ``_publish_per_source_notification``
+    so the tg notifier renders it through the same code
+    path — only ``ok`` is ``True`` (we *did* get the file
+    to 115, just via a previous run) and ``phase`` is
+    ``"dedupe"`` so the retry button does not appear
+    (there is nothing to retry; the previous run was
+    already a success).
+
+    ``requester_id`` resolution matches the per-source
+    path: prefer the in-scope event, fall back to mongo
+    on the rare case where the event payload was
+    stripped by an intermediate redis hop.
+    """
+    requester_id = ""
+    try:
+        from ..queue.contracts import get_request_meta  # type: ignore
+
+        requester_id = ""
+    except Exception:
+        requester_id = ""
+    # Read requester from the task record; cheaper than
+    # threading the event payload through here.
+    if not requester_id and service is not None:
+        try:
+            doc = service.repository.get(task_id)
+            if doc is not None:
+                doc_payload = getattr(doc, "payload", None)
+                if doc_payload is not None:
+                    requester_id = str(
+                        getattr(doc_payload, "requester_id", "") or ""
+                    ).strip()
+        except Exception:
+            pass
+    if not requester_id:
+        logger.info(
+            f"dedupe skip notification skipped (no requester_id) task_id={task_id}"
+        )
+        return
+    file_name = str(source.get("file_name") or "")
+    if not file_name:
+        logger.info(
+            f"dedupe skip notification skipped (no file_name) task_id={task_id}"
+        )
+        return
+    size_bytes = 0  # dedupe records don't store size
+    source_site = str(source.get("site") or "")
+    _publish_task_completed_event(
+        {
+            "task_id": task_id,
+            "requester_id": requester_id,
+            "file_name": file_name,
+            "size_bytes": size_bytes,
+            "location": location or "",
+            "source_site": source_site,
+            "duration_seconds": 0,
+            "ok": True,
+            "target": "RCLONE",
+            "reason": "",
+            "phase": "dedupe",
+            "spec_version": "task.completed.v1",
+        }
+    )
 
 
 def _publish_per_source_notification(

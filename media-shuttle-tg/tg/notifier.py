@@ -145,6 +145,27 @@ def _truncate(s: str, max_len: int) -> str:
     return s[: max_len - 1] + "…"
 
 
+def _status_label(ok: bool, phase: str = "") -> str:
+    """Render the per-file status line.
+
+    The dedupe feature introduces a third state
+    (``phase == "dedupe"``) that is *not* a failure
+    but also not a fresh upload — the file made it
+    onto 115 via a previous run, the current run
+    reused the old location, and the operator should
+    see a "skipped" mark rather than a misleading
+    "upload succeeded" check. Phase-aware rendering
+    here is the single source of truth for the
+    status string; the box / kv / inline formatters
+    all delegate to this helper.
+    """
+    if not ok:
+        return "❌ 上传失败"
+    if str(phase or "").strip().lower() == "dedupe":
+        return "⏭️ 已跳过（dedupe）"
+    return "✅ 上传成功"
+
+
 def _format_notification(event: dict[str, Any]) -> str:
     """Render a task.completed event into a Telegram message.
 
@@ -180,15 +201,16 @@ def _format_notification(event: dict[str, Any]) -> str:
     # any pre-existing buffered events on the redis queue).
     ok = _parse_ok(event.get("ok", True))
     reason = str(event.get("reason") or "")
+    phase = str(event.get("phase") or "")
 
     style = os.getenv("TG_NOTIFY_STYLE", "box").strip().lower()
     if style == "inline":
-        prefix = "✅" if ok else "❌"
+        prefix = _status_label(ok, phase=phase).split(" ", 1)[0]
         suffix = f" — {reason}" if not ok and reason else ""
         return f"{prefix} {name} — {_format_bytes(size)}{suffix}"
     if style == "kv":
-        return _format_kv(name, size, source, location, duration, ok=ok, reason=reason)
-    return _format_box(name, size, source, location, duration, ok=ok, reason=reason)
+        return _format_kv(name, size, source, location, duration, ok=ok, reason=reason, phase=phase)
+    return _format_box(name, size, source, location, duration, ok=ok, reason=reason, phase=phase)
 
 
 def _build_retry_button(event: dict[str, Any]) -> dict[str, str] | None:
@@ -313,7 +335,7 @@ def _parse_ok(value: Any) -> bool:
 
 
 def _format_kv(
-    name: str, size: int, source: str, location: str, duration: str, ok: bool = True, reason: str = ""
+    name: str, size: int, source: str, location: str, duration: str, ok: bool = True, reason: str = "", phase: str = ""
 ) -> str:
     """``key: value`` per line. No border.
 
@@ -331,7 +353,7 @@ def _format_kv(
         文件大小：4.2 GiB
         原因：rclone: connection reset
     """
-    status = "✅ 上传成功" if ok else "❌ 上传失败"
+    status = _status_label(ok, phase=phase)
     lines = [
         f"状态：{status}",
         f"文件名：{name}",
@@ -349,7 +371,7 @@ def _format_kv(
 
 
 def _format_box(
-    name: str, size: int, source: str, location: str, duration: str, ok: bool = True, reason: str = ""
+    name: str, size: int, source: str, location: str, duration: str, ok: bool = True, reason: str = "", phase: str = ""
 ) -> str:
     """Monospace table layout, sent as a ``<pre>`` block.
 
@@ -384,7 +406,7 @@ def _format_box(
         来源    bunkrr.su
         耗时    1m12s
     """
-    status = "✅ 上传成功" if ok else "❌ 上传失败"
+    status = _status_label(ok, phase=phase)
     rows: list[tuple[str, str]] = [("状态", status)]
     # Truncate filename to keep the table readable. 36 chars
     # is the sweet spot for a typical phone screen.

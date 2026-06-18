@@ -187,10 +187,44 @@ class MongoTaskRepository(TaskRepository):
         return [item for item in [self._from_document(deepcopy(doc)) for doc in docs] if item is not None]
 
     def stats(self) -> dict[str, int]:
+        # The task-level counts (parse / download_tasks /
+        # upload_tasks) are the number of TaskRecord docs
+        # sitting in each terminal state. The source-level
+        # counts (download_sources / upload_sources) sum the
+        # lengths of the ``sources`` array across those
+        # same tasks, so a 247-file album counts as 247
+        # sources instead of 1. Operators asked for the
+        # source-level view because the task-level view
+        # was misleading for multi-file albums: a single
+        # big album in flight would show ``download: 1``
+        # even though the worker is grinding through
+        # hundreds of files. We keep both views so a
+        # single-file link and an album can both be
+        # sanity-checked.
+        parse_tasks = self._collection.count_documents({"status": "PARSING"})
+        download_tasks = self._collection.count_documents({"status": "DOWNLOADING"})
+        upload_tasks = self._collection.count_documents({"status": "UPLOADING"})
+        download_sources = 0
+        upload_sources = 0
+        for status, sink in (
+            ("DOWNLOADING", "download_sources"),
+            ("UPLOADING", "upload_sources"),
+        ):
+            for doc in self._collection.find(
+                {"status": status},
+                {"_id": 0, "sources": 1},
+            ):
+                sources = doc.get("sources") or []
+                if sink == "download_sources":
+                    download_sources += len(sources)
+                else:
+                    upload_sources += len(sources)
         return {
-            "parse": self._collection.count_documents({"status": "PARSING"}),
-            "download": self._collection.count_documents({"status": "DOWNLOADING"}),
-            "upload": self._collection.count_documents({"status": "UPLOADING"}),
+            "parse": parse_tasks,
+            "download": download_tasks,
+            "download_sources": download_sources,
+            "upload": upload_tasks,
+            "upload_sources": upload_sources,
         }
 
     def update_status(self, task_id: str, status: str, message: str = "") -> TaskRecord | None:

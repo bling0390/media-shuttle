@@ -142,8 +142,35 @@ class TgHandlers:
             max_pages=max_pages,
         )
 
-    def on_monitor_command(self) -> dict:
-        return self.api.queue_stats()
+    def on_monitor_command(self) -> str:
+        """Backing handler for ``/monitor``.
+
+        Returns a pre-formatted string rather than the raw
+        ``dict`` so the bot reply reads as a small table
+        rather than ``{'parse': 0, 'download': 1, ...}``.
+        The bot itself does ``await message.reply(...)`` and
+        doesn't know how to lay out the keys, so the layout
+        lives here. We surface both task-level and source-
+        level counts because the source-level view is the
+        useful one for multi-file albums — a 247-file
+        album shows as ``download_sources: 247`` rather
+        than ``download: 1``.
+        """
+        stat = self.api.queue_stats()
+        # Defensive defaults: an older api (or a mocked
+        # client in tests) might not return the new keys.
+        rows = [
+            ("parse",            stat.get("parse", 0)),
+            ("download tasks",   stat.get("download", 0)),
+            ("download sources", stat.get("download_sources", 0)),
+            ("upload tasks",     stat.get("upload", 0)),
+            ("upload sources",   stat.get("upload_sources", 0)),
+        ]
+        label_width = max(len(label) for label, _ in rows)
+        lines = [f"📊 monitor", ""]
+        for label, value in rows:
+            lines.append(f"  {label.ljust(label_width)}  {value}")
+        return "\n".join(lines)
 
     def on_worker_command(self, worker: str, queue: str, concurrency: int) -> dict:
         return self.api.admin_worker(worker=worker, queue=queue, concurrency=concurrency)

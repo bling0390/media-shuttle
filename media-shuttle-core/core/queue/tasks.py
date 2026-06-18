@@ -449,6 +449,21 @@ def process_upload_result_logic(
         logger.warning(
             f"upload skipped because download failed task_id={task_id} target={target} reason={download_packet.get('reason', '')}"
         )
+        # Still notify on download failure so the operator
+        # sees per-file errors in real time (e.g. bunkr 404
+        # on one of the 247 files in an album). Without
+        # this, an album with mixed success/failure only
+        # surfaces the failure via the (delayed) finalize
+        # summary, which feels silent to the operator.
+        _publish_per_source_notification(
+            download_packet=download_packet,
+            task_id=task_id,
+            target=target,
+            ok=False,
+            location="",
+            reason=str(download_packet.get("reason") or ""),
+            service=service,
+        )
         return download_packet
 
     service.repository.update_status(task_id, TaskStatus.UPLOADING)
@@ -460,7 +475,7 @@ def process_upload_result_logic(
         upload = service.pipeline.uploader_registry.upload(target, download, destination)
         cleanup_local_download(download.local_path)
         logger.info(f"upload finished task_id={task_id} target={target} location={upload.location}")
-        return {
+        result = {
             "ok": True,
             "location": upload.location,
             "download": download_packet.get("download"),
@@ -468,9 +483,18 @@ def process_upload_result_logic(
             "task_id": task_id,
             "event": download_packet.get("event"),
         }
+        _publish_per_source_notification(
+            download_packet=download_packet,
+            task_id=task_id,
+            target=target,
+            ok=True,
+            location=upload.location,
+            service=service,
+        )
+        return result
     except Exception as exc:
         logger.warning(f"upload failed task_id={task_id} target={target} reason={exc}")
-        return {
+        result = {
             "ok": False,
             "reason": str(exc),
             "download": download_packet.get("download"),
@@ -478,6 +502,123 @@ def process_upload_result_logic(
             "task_id": task_id,
             "event": download_packet.get("event"),
         }
+        _publish_per_source_notification(
+            download_packet=download_packet,
+            task_id=task_id,
+            target=target,
+            ok=False,
+            location="",
+            reason=str(exc),
+            service=service,
+        )
+        return result
+
+
+def _publish_per_source_notification(
+    download_packet: dict[str, Any],
+    task_id: str,
+    target: str,
+    ok: bool,
+    location: str,
+    reason: str = "",
+    service=None,
+) -> None:
+    """Push a per-file ``task.completed`` event to the tg subscriber.
+
+    Called from ``process_upload_result_logic`` after every
+    individual upload (success or failure) so the operator
+    sees progress in real time on big albums. The finalize
+    callback in ``process_finalize_task_logic`` no longer
+    publishes a summary; per-file notifications are the
+    only signal the tg bot needs.
+
+    Best-effort: the redis publish is wrapped in its own
+    try/except so a redis hiccup never rolls the upload
+    result back. The task is already terminal in mongo
+    by the time this is called.
+    """
+    source_event = download_packet.get("event") or {}
+    requester_id = str(
+        ((source_event or {}).get("payload") or {}).get("requester_id") or ""
+    ).strip()
+    if not requester_id:
+        # Fall back to the requester_id stored on the parent
+        # task record. Fan-out children inherit the parent's
+        # requester_id via mongo when the parent is created,
+        # so this should resolve in practice even if the
+        # event payload was stripped (e.g. an event that
+        # came in via redis without the payload key).
+        if service is not None:
+            try:
+                task_doc = service.repository.get(task_id)
+                if task_doc is not None:
+                    payload = getattr(task_doc, "payload", None)
+                    if payload is not None:
+                        requester_id = str(
+                            getattr(payload, "requester_id", "") or ""
+                        ).strip()
+            except Exception:
+                pass
+    if not requester_id:
+        logger.info(
+            f"per-source notification skipped (no requester_id) task_id={task_id}"
+        )
+        return
+
+    download = download_packet.get("download") or {}
+    source = download_packet.get("source") or {}
+    # Prefer ``download.file_name`` (set on success); fall
+    # back to ``source.file_name`` so download failures —
+    # where the download packet has no ``download`` key —
+    # still get a useful notification. Without this fallback
+    # every bunkr 410 / 404 in an album would silently
+    # skip the per-file alert.
+    file_name = str(
+        download.get("file_name") or source.get("file_name") or ""
+    )
+    size_bytes = int(download.get("size_bytes") or 0)
+    source_site = str(download.get("site") or source.get("site") or "")
+    if not file_name:
+        logger.info(
+            f"per-source notification skipped (no file_name) task_id={task_id}"
+        )
+        return
+
+    # Per-file duration: the source event's created_at is the
+    # parent task's created_at (the fan-out child doesn't get
+    # its own timestamp), so duration here is the wall-clock
+    # since the parent started. For multi-file albums that's
+    # the cumulative time, which is what the operator wants
+    # to see ("this file took 4h 12m" end-to-end).
+    duration_seconds = 0
+    try:
+        if source_event.get("created_at"):
+            from datetime import datetime, timezone
+            started = datetime.fromisoformat(
+                str(source_event["created_at"]).replace("Z", "+00:00")
+            )
+            duration_seconds = max(
+                0,
+                int((datetime.now(timezone.utc) - started).total_seconds()),
+            )
+    except Exception:
+        duration_seconds = 0
+
+    _publish_task_completed_event(
+        {
+            "task_id": task_id,
+            "requester_id": requester_id,
+            "file_name": file_name,
+            "size_bytes": size_bytes,
+            "location": location or "",
+            "source_site": source_site,
+            "duration_seconds": duration_seconds,
+            "ok": ok,
+            "target": target,
+            "reason": reason,
+            "spec_version": "task.completed.v1",
+        }
+    )
 
 
 def _publish_forum_fanout_events(events, service):
@@ -699,68 +840,15 @@ def process_finalize_task_logic(upload_results: list[dict[str, Any]], event: dic
     service.repository.update_runtime_fields(task_id, artifacts=artifacts, last_error="")
     logger.info(f"task finalize succeeded task_id={task_id} result_count={len(locations)}")
 
-    # Best-effort notification fan-out. The task is already
-    # terminal in mongo; we just hand the (file_name, size, target
-    # chat) to whatever subscriber is listening. Failures are
-    # logged and dropped.
-    first = next((item for item in upload_results if item.get("ok")), None) or {}
-    download = first.get("download") or {}
-    # ``TaskRecord`` doesn't expose ``requester_id`` as a flat
-    # attribute — it lives at ``TaskRecord.payload.requester_id``.
-    # The simplest source for the id is the originating
-    # ``task.created.v1`` event (carried in ``event``), which
-    # always has ``payload.requester_id`` populated when the
-    # request reached us via the queue. We fall back to the
-    # mongo record for the rare case where the event is
-    # synthesized in-process and lacks the field.
-    requester_id = str(
-        ((event or {}).get("payload") or {}).get("requester_id") or ""
-    ).strip()
-    if not requester_id:
-        task_doc = service.repository.get(task_id)
-        if task_doc is not None:
-            payload = getattr(task_doc, "payload", None)
-            if payload is not None:
-                requester_id = str(
-                    getattr(payload, "requester_id", "") or ""
-                ).strip()
-    file_name = str(download.get("file_name") or "")
-    size_bytes = int(download.get("size_bytes") or 0)
-    source_site = str(download.get("site") or "")
-    # ``duration_seconds`` is the wall-clock time from the
-    # event's ``created_at`` to the finalize moment, falling
-    # back to 0 if the timestamp cannot be parsed (e.g. an
-    # event that came in via redis without a created_at).
-    duration_seconds = 0
-    try:
-        if event.get("created_at"):
-            from datetime import datetime, timezone
-            started = datetime.fromisoformat(
-                str(event["created_at"]).replace("Z", "+00:00")
-            )
-            duration_seconds = max(
-                0,
-                int((datetime.now(timezone.utc) - started).total_seconds()),
-            )
-    except Exception:
-        duration_seconds = 0
-    if requester_id and file_name:
-        _publish_task_completed_event(
-            {
-                "task_id": task_id,
-                "requester_id": requester_id,
-                "file_name": file_name,
-                "size_bytes": size_bytes,
-                "location": locations[0] if locations else "",
-                "source_site": source_site,
-                "duration_seconds": duration_seconds,
-                "spec_version": "task.completed.v1",
-            }
-        )
-    else:
-        logger.info(
-            f"notification skipped task_id={task_id} requester_id={requester_id!r} file_name={file_name!r}"
-        )
+    # Per-file notifications are dispatched from
+    # ``process_upload_result_logic`` as each upload (or
+    # failure) completes. The finalize callback used to
+    # publish a single summary event here, but that
+    # duplicated the message for multi-file albums and
+    # made the operator wait until the entire album was
+    # done before seeing anything. We no longer publish
+    # from finalize; mongo state + artifacts is the only
+    # responsibility left at this layer.
 
     return {
         "state": "succeeded",

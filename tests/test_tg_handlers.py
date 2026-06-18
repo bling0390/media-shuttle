@@ -17,7 +17,13 @@ class FakeApiClient:
 
     def queue_stats(self):
         self.calls.append(("queue_stats", {}))
-        return {"parse": 0, "download": 0, "upload": 0}
+        return {
+            "parse": 0,
+            "download": 0,
+            "download_sources": 0,
+            "upload": 0,
+            "upload_sources": 0,
+        }
 
     def admin_worker(self, **kwargs):
         self.calls.append(("admin_worker", kwargs))
@@ -104,6 +110,52 @@ class TestTgHandlers(unittest.TestCase):
             "sweep_unavailable",
             format_cleanup_reply({"accepted": False, "reason": "sweep_unavailable"}),
         )
+
+    def test_monitor_renders_task_and_source_counts(self):
+        # A 247-file album in flight should show as
+        # ``download sources: 247`` (the useful view for
+        # operators) while still showing ``download tasks: 1``
+        # so a single-file link is sanity-checkable.
+        from tg.handlers import TgHandlers
+
+        class _Api:
+            def queue_stats(self):
+                return {
+                    "parse": 0,
+                    "download": 1,
+                    "download_sources": 247,
+                    "upload": 0,
+                    "upload_sources": 0,
+                }
+
+        out = TgHandlers(_Api()).on_monitor_command()
+        self.assertIn("download tasks", out)
+        self.assertIn("download sources", out)
+        self.assertIn("upload tasks", out)
+        self.assertIn("upload sources", out)
+        # The source-level value must appear next to its label
+        # so the operator reads the right number, not the task
+        # count by accident.
+        self.assertIn("247", out)
+        self.assertIn("📊 monitor", out)
+
+    def test_monitor_tolerates_legacy_stats_payload(self):
+        # An older api (or a hand-rolled mock) might still
+        # return the pre-source-counts shape. The handler
+        # must not crash; it should default the source
+        # counts to 0.
+        from tg.handlers import TgHandlers
+
+        class _Api:
+            def queue_stats(self):
+                return {"parse": 0, "download": 1, "upload": 0}
+
+        out = TgHandlers(_Api()).on_monitor_command()
+        self.assertIn("download tasks", out)
+        self.assertIn("download sources", out)
+        # Source counts default to 0 even when the api
+        # didn't return them.
+        self.assertIn("0", out)
 
 
 if __name__ == "__main__":

@@ -147,29 +147,53 @@ def _format_notification(event: dict[str, Any]) -> str:
     source = str(event.get("source_site") or "")
     location = str(event.get("location") or "")
     duration = _format_duration(int(event.get("duration_seconds") or 0))
+    # ``ok`` was added when per-file notifications were wired
+    # up in core/queue/tasks.py::process_upload_result_logic.
+    # Treat missing as success (the legacy finalize summary
+    # never set the field, and we want to stay compatible with
+    # any pre-existing buffered events on the redis queue).
+    ok = event.get("ok", True)
+    ok = bool(ok) if not isinstance(ok, str) else ok.strip().lower() not in {
+        "false",
+        "0",
+        "no",
+        "fail",
+        "failed",
+    }
+    reason = str(event.get("reason") or "")
 
     style = os.getenv("TG_NOTIFY_STYLE", "box").strip().lower()
     if style == "inline":
-        return f"{name} — {_format_bytes(size)}"
+        prefix = "✅" if ok else "❌"
+        suffix = f" — {reason}" if not ok and reason else ""
+        return f"{prefix} {name} — {_format_bytes(size)}{suffix}"
     if style == "kv":
-        return _format_kv(name, size, source, location, duration)
-    return _format_box(name, size, source, location, duration)
+        return _format_kv(name, size, source, location, duration, ok=ok, reason=reason)
+    return _format_box(name, size, source, location, duration, ok=ok, reason=reason)
 
 
 def _format_kv(
-    name: str, size: int, source: str, location: str, duration: str
+    name: str, size: int, source: str, location: str, duration: str, ok: bool = True, reason: str = ""
 ) -> str:
     """``key: value`` per line. No border.
 
-    Example::
+    Example (success)::
 
-        状态：上传成功
+        状态：✅ 上传成功
         文件名：Hegre_Serena_L_-_Sci-Fi_Cosmic_Climax_Massage_4K.mp4
         文件大小：4.2 GiB
         耗时：1m12s
+
+    Example (failure)::
+
+        状态：❌ 上传失败
+        文件名：Hegre_Serena_L_-_Sci-Fi_Cosmic_Climax_Massage_4K.mp4
+        文件大小：4.2 GiB
+        原因：rclone: connection reset
     """
+    status = "✅ 上传成功" if ok else "❌ 上传失败"
     lines = [
-        "状态：上传成功",
+        f"状态：{status}",
         f"文件名：{name}",
         f"文件大小：{_format_bytes(size)}",
     ]
@@ -177,39 +201,59 @@ def _format_kv(
         lines.append(f"来源：{source}")
     if location:
         lines.append(f"位置：{location}")
+    if not ok and reason:
+        lines.append(f"原因：{_truncate(reason, 60)}")
     if duration:
         lines.append(f"耗时：{duration}")
     return "\n".join(lines)
 
 
 def _format_box(
-    name: str, size: int, source: str, location: str, duration: str
+    name: str, size: int, source: str, location: str, duration: str, ok: bool = True, reason: str = ""
 ) -> str:
-    """Monospace box layout, sent as a ``<pre>`` block.
+    """Monospace table layout, sent as a ``<pre>`` block.
 
-    The widths are picked so the box reads as a table
-    inside the ``<pre>`` rendering. Telegram renders
-    ``<pre>`` as a fixed-width block, so columns line up
-    even with non-ASCII characters (with the usual
-    CJK-width caveat).
+    The widths are picked so the rows read as a two-
+    column table inside the ``<pre>`` rendering.
+    Telegram renders ``<pre>`` as a fixed-width block,
+    so columns line up even with non-ASCII characters
+    (with the usual CJK-width caveat).
 
-    Example::
+    The outer box border was dropped because it adds
+    visual weight without information — the
+    status-separator line (after row 0) is enough to
+    mark the header.
 
-        ┌──────────────────────────────┐
-        │  ✅ 状态  上传成功            │
-        ├──────────────────────────────┤
-        │  文件名  Hegre_Serena_L...   │
-        │  大小    4.2 GiB             │
-        │  来源    bunkrr.su           │
-        │  位置    rclone://115:/...   │
-        │  耗时    1m12s               │
-        └──────────────────────────────┘
+    Example (success)::
+
+        状态  ✅ 上传成功
+        ──────────────────────────────
+        文件名  Hegre_Serena_L...
+        大小    4.2 GiB
+        来源    bunkrr.su
+        位置    rclone://115:/...
+        耗时    1m12s
+
+    Example (failure)::
+
+        状态  ❌ 上传失败
+        ──────────────────────────────
+        文件名  Hegre_Serena_L...
+        大小    4.2 GiB
+        原因    rclone: connection...
+        来源    bunkrr.su
+        耗时    1m12s
     """
-    rows: list[tuple[str, str]] = [("状态", "✓ 上传成功")]
-    # Truncate filename to keep the box readable. 36 chars
+    status = "✅ 上传成功" if ok else "❌ 上传失败"
+    rows: list[tuple[str, str]] = [("状态", status)]
+    # Truncate filename to keep the table readable. 36 chars
     # is the sweet spot for a typical phone screen.
     rows.append(("文件名", _truncate(name, 36)))
     rows.append(("大小", _format_bytes(size)))
+    if not ok and reason:
+        # Show the reason right after the size so the failure
+        # cause is the most prominent field for failed rows.
+        rows.append(("原因", _truncate(reason, 36)))
     if source:
         rows.append(("来源", source))
     if location:
@@ -219,30 +263,28 @@ def _format_box(
 
     label_width = max(len(label) for label, _ in rows)
     value_width = max(len(value) for _, value in rows)
-    # The interior of a row is ``│  <label>  <value>  │`` —
-    # 2 leading spaces + label + 2 inner spaces + value +
-    # 2 trailing spaces. Total interior width must match
-    # the row's interior so the left/right border line up.
-    interior = 2 + label_width + 2 + value_width + 2
-    border_top = "┌" + "─" * interior + "┐"
-    border_mid = "├" + "─" * interior + "┤"
-    border_bot = "└" + "─" * interior + "┘"
+    # The interior of a row is ``<label>  <value>`` —
+    # label + 2 inner spaces + value. Total interior
+    # width is what the separator line is sized to match.
+    interior = label_width + 2 + value_width
+    separator = "─" * interior
 
-    out: list[str] = [border_top]
+    out: list[str] = []
     for idx, (label, value) in enumerate(rows):
-        line = f"│  {label.ljust(label_width)}  {value.ljust(value_width)}  │"
-        if idx == 1:
-            # Visual separator after the status line so the
-            # status reads as a header.
-            out.append(border_mid)
+        line = f"{label.ljust(label_width)}  {value.ljust(value_width)}"
         out.append(line)
-    out.append(border_bot)
+        if idx == 0:
+            # Visual separator after the status line so
+            # the status reads as a header and the rest
+            # of the rows look like a data table.
+            out.append(separator)
     body = "\n".join(out)
-    # ``<pre>`` forces monospace in tg so the box columns
+    # ``<pre>`` forces monospace in tg so the columns
     # actually line up. ``<code>`` would also work but
-    # ``<pre>`` is the more common pattern for pre-formatted
-    # text. We escape HTML special chars in the body just
-    # in case a future filename contains one (most don't).
+    # ``<pre>`` is the more common pattern for pre-
+    # formatted text. We escape HTML special chars in
+    # the body just in case a future filename contains
+    # one (most don't).
     escaped = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f"<pre>{escaped}</pre>"
 

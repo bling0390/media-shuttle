@@ -98,23 +98,28 @@ class BoxFormatTests(unittest.TestCase):
             duration="5s",
         )
         # Strip the surrounding ``<pre>`` / ``</pre>`` tags
-        # so the line-by-line checks below see the box
-        # borders directly.
+        # so the line-by-line checks below see the table
+        # rows directly.
         if body.startswith("<pre>"):
             body = body[len("<pre>"):]
         if body.endswith("</pre>"):
             body = body[: -len("</pre>")]
         lines = body.split("\n")
-        # 9 lines: top + status + mid + filename + size + source +
-        # location + duration + bottom.
-        self.assertEqual(len(lines), 9)
-        # All interior rows must share the same length.
-        row_lens = {len(line) for line in lines[1:-1]}
+        # 7 lines: status + separator + filename + size + source
+        # + location + duration. The outer box border is gone;
+        # only the separator after the status line is kept.
+        self.assertEqual(len(lines), 7)
+        # All rows must share the same length (no leading /
+        # trailing ``│`` to strip now, so the comparison is
+        # simpler than the old box).
+        row_lens = {len(line) for line in lines}
         self.assertEqual(len(row_lens), 1, f"rows have varying lengths: {row_lens}")
-        # Borders match.
-        self.assertTrue(lines[0].startswith("┌"))
-        self.assertTrue(lines[-1].startswith("└"))
-        self.assertTrue(lines[2].startswith("├"))
+        # Status row is on top, separator immediately after.
+        self.assertIn("✅ 上传成功", lines[0])
+        self.assertTrue(lines[1].startswith("─"))
+        self.assertNotIn("┌", body)
+        self.assertNotIn("└", body)
+        self.assertNotIn("│", body)
 
     def test_omits_optional_rows(self):
         # No source / location / duration.
@@ -130,8 +135,8 @@ class BoxFormatTests(unittest.TestCase):
         if body.endswith("</pre>"):
             body = body[: -len("</pre>")]
         lines = body.split("\n")
-        # 6 lines: top + status + mid + filename + size + bottom.
-        self.assertEqual(len(lines), 6)
+        # 4 lines: status + separator + filename + size.
+        self.assertEqual(len(lines), 4)
         # 2.0 KiB
         self.assertIn("2.0 KiB", body)
 
@@ -186,7 +191,7 @@ class KvFormatTests(unittest.TestCase):
         )
         # 6 lines: status / filename / size / source / location / duration
         self.assertEqual(len(body.split("\n")), 6)
-        self.assertIn("状态：上传成功", body)
+        self.assertIn("状态：✅ 上传成功", body)
         self.assertIn("文件名：file.mp4", body)
         self.assertIn("文件大小：4.0 GiB", body)
         self.assertIn("来源：bunkrr.su", body)
@@ -231,7 +236,7 @@ class NotificationStyleDispatchTests(unittest.TestCase):
     def test_kv_style(self):
         _set_style("kv")
         out = _format_notification({"file_name": "a.mp4", "size_bytes": 1024})
-        self.assertIn("状态：上传成功", out)
+        self.assertIn("状态：✅ 上传成功", out)
         self.assertFalse(out.startswith("<pre>"))
 
     def test_inline_style_legacy(self):
@@ -239,8 +244,8 @@ class NotificationStyleDispatchTests(unittest.TestCase):
         out = _format_notification(
             {"file_name": "a.mp4", "size_bytes": 4 * 1024 ** 3}
         )
-        # Legacy format: "name — size"
-        self.assertEqual(out, "a.mp4 — 4.0 GiB")
+        # Legacy format with a success prefix: "✅ name — size"
+        self.assertEqual(out, "✅ a.mp4 — 4.0 GiB")
 
     def test_unknown_style_falls_back_to_box(self):
         _set_style("garbage")
@@ -287,9 +292,47 @@ class NotificationFieldRenderingTests(unittest.TestCase):
         # duration_seconds) should still render cleanly.
         _set_style("kv")
         out = _format_notification({"file_name": "x.mp4", "size_bytes": 1024})
-        self.assertIn("状态：上传成功", out)
+        self.assertIn("状态：✅ 上传成功", out)
         self.assertIn("文件名：x.mp4", out)
         self.assertIn("文件大小：1.0 KiB", out)
+
+    def test_failure_renders_failure_status(self):
+        _set_style("kv")
+        out = _format_notification(
+            {
+                "file_name": "x.mp4",
+                "size_bytes": 1024,
+                "ok": False,
+                "reason": "rclone: connection reset",
+            }
+        )
+        self.assertIn("状态：❌ 上传失败", out)
+        self.assertIn("原因：rclone: connection reset", out)
+
+    def test_failure_renders_failure_status_box(self):
+        body = _format_box(
+            name="x.mp4",
+            size=1024,
+            source="",
+            location="",
+            duration="",
+            ok=False,
+            reason="rclone: connection reset",
+        )
+        # Body wrapped in <pre>; reason should appear as a
+        # row with the literal text.
+        self.assertIn("❌ 上传失败", body)
+        self.assertIn("rclone: connection reset", body)
+
+    def test_explicit_ok_true_is_treated_as_success(self):
+        # Pass ``ok=True`` explicitly to make sure the
+        # default-doesn't-break-the-truthy-string branch
+        # works correctly.
+        _set_style("kv")
+        out = _format_notification(
+            {"file_name": "x.mp4", "size_bytes": 1024, "ok": True}
+        )
+        self.assertIn("状态：✅ 上传成功", out)
 
 
 if __name__ == "__main__":
